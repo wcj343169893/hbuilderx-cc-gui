@@ -1,6 +1,6 @@
 import { emitAccumulatedUsage, mergeUsage } from '../../utils/usage-utils.js';
 import { truncateErrorContent, truncateToolResultBlock } from './message-output-filter.js';
-import { normalizeStreamDelta, rememberStreamSnapshot } from './stream-delta-normalizer.js';
+import { getBlockMap, normalizeStreamDelta, rememberStreamSnapshot } from './stream-delta-normalizer.js';
 
 export function emitUsageTag(msg) {
   if (msg.type === 'assistant' && msg.message?.usage) {
@@ -73,13 +73,21 @@ export function processMessageContent(msg, turnState) {
       const block = content[i];
       if (block.type === 'text') {
         const currentText = block.text || '';
+        const textBlockMap = getBlockMap(turnState, 'textBlockContentByIndex');
+        const previousBlock = textBlockMap.get(i) || '';
         rememberStreamSnapshot(turnState, 'text', i, currentText);
-        // Send delta if content grew, regardless of hasStreamEvents
-        // This ensures conservative sync works correctly and prevents content loss
-        // (especially important for markdown tables which need complete row structures)
-        if (turnState.streamingEnabled && currentText.length > turnState.lastAssistantContent.length) {
-          const delta = currentText.substring(turnState.lastAssistantContent.length);
-          if (delta) {
+        // Compare against per-block content rather than lastAssistantContent.
+        // After a silent snapshot-mode correction (absorbed by computeNovelDelta)
+        // the blockMap is updated but lastAssistantContent is stale.
+        //
+        // When streaming events have started but this block is still empty the
+        // stream will deliver the content shortly — emitting the full block text
+        // here would duplicate every token.  Only emit when either no stream
+        // events have fired at all (pre-stream fallback) or the block already
+        // has partial content (genuine tail-fill / snapshot correction).
+        if (turnState.streamingEnabled && currentText.length > previousBlock.length) {
+          const delta = currentText.substring(previousBlock.length);
+          if (delta && (!turnState.hasStreamEvents || previousBlock.length > 0)) {
             process.stdout.write(`[CONTENT_DELTA] ${JSON.stringify(delta)}\n`);
           }
           turnState.lastAssistantContent = currentText;
@@ -88,11 +96,12 @@ export function processMessageContent(msg, turnState) {
         }
       } else if (block.type === 'thinking') {
         const thinkingText = block.thinking || block.text || '';
+        const thinkingBlockMap = getBlockMap(turnState, 'thinkingBlockContentByIndex');
+        const previousThinkingBlock = thinkingBlockMap.get(i) || '';
         rememberStreamSnapshot(turnState, 'thinking', i, thinkingText);
-        // Send delta if thinking grew, regardless of hasStreamEvents
-        if (turnState.streamingEnabled && thinkingText.length > turnState.lastThinkingContent.length) {
-          const delta = thinkingText.substring(turnState.lastThinkingContent.length);
-          if (delta) {
+        if (turnState.streamingEnabled && thinkingText.length > previousThinkingBlock.length) {
+          const delta = thinkingText.substring(previousThinkingBlock.length);
+          if (delta && (!turnState.hasStreamEvents || previousThinkingBlock.length > 0)) {
             process.stdout.write(`[THINKING_DELTA] ${JSON.stringify(delta)}\n`);
           }
           turnState.lastThinkingContent = thinkingText;
@@ -102,11 +111,12 @@ export function processMessageContent(msg, turnState) {
       }
     }
   } else if (typeof content === 'string') {
+    const textBlockMap = getBlockMap(turnState, 'textBlockContentByIndex');
+    const previousBlock = textBlockMap.get(0) || '';
     rememberStreamSnapshot(turnState, 'text', 0, content);
-    // Send delta if content grew, regardless of hasStreamEvents
-    if (turnState.streamingEnabled && content.length > turnState.lastAssistantContent.length) {
-      const delta = content.substring(turnState.lastAssistantContent.length);
-      if (delta) {
+    if (turnState.streamingEnabled && content.length > previousBlock.length) {
+      const delta = content.substring(previousBlock.length);
+      if (delta && (!turnState.hasStreamEvents || previousBlock.length > 0)) {
         process.stdout.write(`[CONTENT_DELTA] ${JSON.stringify(delta)}\n`);
       }
       turnState.lastAssistantContent = content;

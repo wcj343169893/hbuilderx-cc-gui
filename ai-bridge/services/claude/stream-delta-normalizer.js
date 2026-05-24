@@ -1,4 +1,4 @@
-function getBlockMap(turnState, key) {
+export function getBlockMap(turnState, key) {
   if (!(turnState[key] instanceof Map)) {
     turnState[key] = new Map();
   }
@@ -36,7 +36,11 @@ function computeNovelDelta(previous, incoming, mode) {
   }
 
   // Stale replay: incoming is fully contained at the start or end of previous.
-  if (previous.startsWith(incoming) || previous.endsWith(incoming)) {
+  // Only active in cumulative-snapshot mode.  In incremental mode every delta is
+  // by definition novel, and a coincidental suffix match (e.g. "0" arriving after
+  // "150") would falsely absorb legitimate characters — producing the exact
+  // character-shift bug seen with 1500 → 150.
+  if (mode === 'snapshot' && (previous.startsWith(incoming) || previous.endsWith(incoming))) {
     return { novel: '', next: previous, mode };
   }
 

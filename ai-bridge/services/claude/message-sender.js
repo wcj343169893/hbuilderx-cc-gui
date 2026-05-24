@@ -30,7 +30,7 @@ import {
 import { createPreToolUseHook } from './permission-mode.js';
 import { loadMcpServersConfigAsRecord } from './mcp-status/config-loader.js';
 import { setActiveQueryResult } from './message-session-registry.js';
-import { normalizeStreamDelta, rememberStreamSnapshot } from './stream-delta-normalizer.js';
+import { getBlockMap, normalizeStreamDelta, rememberStreamSnapshot } from './stream-delta-normalizer.js';
 import { generateSessionTitle } from '../session-title-service.js';
 
 // ========== Internal helpers for deduplication ==========
@@ -245,9 +245,11 @@ function processStreamMessage(msg, state, logPrefix) {
 
 /** Emit text content delta with streaming fallback support. */
 function emitTextDelta(currentText, state, blockIndex = 0) {
+  const textBlockMap = getBlockMap(state, 'textBlockContentByIndex');
+  const previousBlock = textBlockMap.get(blockIndex) || '';
   rememberStreamSnapshot(state, 'text', blockIndex, currentText);
-  if (state.streamingEnabled && !state.hasStreamEvents && currentText.length > state.lastAssistantContent.length) {
-    const delta = currentText.substring(state.lastAssistantContent.length);
+  if (state.streamingEnabled && !state.hasStreamEvents && currentText.length > previousBlock.length) {
+    const delta = currentText.substring(previousBlock.length);
     if (delta) process.stdout.write(`[CONTENT_DELTA] ${JSON.stringify(delta)}\n`);
     state.lastAssistantContent = currentText;
   } else if (state.streamingEnabled && state.hasStreamEvents) {
@@ -259,9 +261,11 @@ function emitTextDelta(currentText, state, blockIndex = 0) {
 
 /** Emit thinking content delta with streaming fallback support. */
 function emitThinkingDelta(thinkingText, state, blockIndex = 0) {
+  const thinkingBlockMap = getBlockMap(state, 'thinkingBlockContentByIndex');
+  const previousThinkingBlock = thinkingBlockMap.get(blockIndex) || '';
   rememberStreamSnapshot(state, 'thinking', blockIndex, thinkingText);
-  if (state.streamingEnabled && !state.hasStreamEvents && thinkingText.length > state.lastThinkingContent.length) {
-    const delta = thinkingText.substring(state.lastThinkingContent.length);
+  if (state.streamingEnabled && !state.hasStreamEvents && thinkingText.length > previousThinkingBlock.length) {
+    const delta = thinkingText.substring(previousThinkingBlock.length);
     if (delta) process.stdout.write(`[THINKING_DELTA] ${JSON.stringify(delta)}\n`);
     state.lastThinkingContent = thinkingText;
   } else if (state.streamingEnabled && state.hasStreamEvents) {
