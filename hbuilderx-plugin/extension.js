@@ -43,6 +43,7 @@ let output = null;
 let panel = null;
 let bridge = null;
 let router = null;
+let statusBar = null;
 
 function activate(context) {
   const channel = hx.window.createOutputChannel('CC GUI');
@@ -145,6 +146,19 @@ function activate(context) {
   if (context && context.subscriptions) {
     context.subscriptions.push(openCmd, sendSelectionCmd, addFileCmd);
   }
+
+  // 创建底部状态栏图标：点击打开 CC GUI 面板。
+  // 整体兜底，失败仅记日志，避免阻断 activate。
+  try {
+    statusBar = hx.window.createStatusBarItem(hx.StatusBarAlignment.Right, 100);
+    statusBar.text = '$(ccgui)';
+    statusBar.tooltip = '打开 CC GUI 助手';
+    statusBar.command = 'extension.ccgui.open';
+    statusBar.show();
+    output.appendLine('[ccgui] 状态栏图标已创建');
+  } catch (e) {
+    output.appendLine(`[ccgui] 状态栏图标创建失败: ${e && e.message}`);
+  }
 }
 
 /**
@@ -168,9 +182,17 @@ function deactivate() {
   } catch (e) {
     /* ignore */
   }
+  try {
+    if (statusBar && typeof statusBar.dispose === 'function') {
+      statusBar.dispose();
+    }
+  } catch (e) {
+    /* ignore */
+  }
   router = null;
   panel = null;
   bridge = null;
+  statusBar = null;
   if (output) {
     output.appendLine('[ccgui] 插件已停用');
   }

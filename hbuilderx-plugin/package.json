@@ -61,6 +61,15 @@
         }
       ]
     },
+    "icons": {
+      "ccgui": {
+        "description": "CC GUI",
+        "default": {
+          "fontPath": "./icons/ccgui-iconfont.ttf",
+          "fontCharacter": "\\e900"
+        }
+      }
+    },
     "viewsContainers": {
       "rightside": [
         {
