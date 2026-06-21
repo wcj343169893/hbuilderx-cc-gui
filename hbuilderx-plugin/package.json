@@ -12,6 +12,7 @@
   ],
   "main": "./extension",
   "activationEvents": [
+    "*",
     "onCommand:extension.ccgui.open",
     "onCommand:extension.ccgui.sendSelection",
     "onCommand:extension.ccgui.addFile",
