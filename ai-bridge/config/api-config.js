@@ -396,9 +396,22 @@ export function loadManagedSettings() {
 export function loadClaudeSettings() {
   const runtimeState = getClaudeRuntimeState();
   if (!canReadClaudeSettings(runtimeState)) {
-    debugLog('[DEBUG] Skipping ~/.claude/settings.json read: Claude provider is inactive');
+    debugLog('[DEBUG] Skipping settings read: Claude provider is inactive');
     return null;
   }
+  // Managed provider: source the active provider's settingsConfig from
+  // ~/.codemoss/config.json so the user's ~/.claude/settings.json is never
+  // required nor mutated. settingsConfig has the same { env: {...} } shape that
+  // setupApiKey()/injectNetworkEnvVars() expect.
+  if (runtimeState.access === 'managed' && runtimeState.currentId) {
+    const config = loadCodemossConfig();
+    const provider = config?.claude?.providers?.[runtimeState.currentId];
+    if (provider && provider.settingsConfig && typeof provider.settingsConfig === 'object') {
+      debugLog('[DEBUG] Using managed provider settingsConfig from ~/.codemoss/config.json:', runtimeState.currentId);
+      return provider.settingsConfig;
+    }
+  }
+  // local / cli_login modes (explicitly opted in by the user) still read disk.
   return readClaudeSettingsFromDisk();
 }
 

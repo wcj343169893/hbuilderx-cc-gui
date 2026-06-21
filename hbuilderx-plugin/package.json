@@ -1,0 +1,70 @@
+{
+  "name": "ccgui",
+  "displayName": "CC GUI（Claude or Codex）",
+  "description": "Claude Code / OpenAI Codex 可视化助手（HBuilderX 版）",
+  "version": "0.1.0",
+  "publisher": "gamehours",
+  "engines": {
+    "HBuilderX": "^3.0.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./extension",
+  "activationEvents": [
+    "onCommand:extension.ccgui.open",
+    "onView:ccgui.chatView"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "extension.ccgui.open",
+        "title": "打开 CC GUI 助手"
+      }
+    ],
+    "viewsContainers": {
+      "rightside": [
+        {
+          "id": "ccgui.container",
+          "title": "CC GUI"
+        }
+      ]
+    },
+    "views": {
+      "ccgui.container": [
+        {
+          "id": "ccgui.chatView",
+          "name": "CC GUI",
+          "title": "CC GUI（Claude or Codex）"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "CC GUI",
+      "properties": {
+        "ccgui.nodePath": {
+          "type": "string",
+          "default": "",
+          "description": "Node.js 可执行文件路径（留空则自动探测系统 Node）"
+        },
+        "ccgui.claudeCliPath": {
+          "type": "string",
+          "default": "",
+          "description": "自定义 Claude CLI 路径（留空则使用 PATH 中的 claude）"
+        },
+        "ccgui.permissionMode": {
+          "type": "string",
+          "default": "askAlways",
+          "enum": [
+            "askAlways",
+            "acceptEdits",
+            "bypassPermissions",
+            "plan"
+          ],
+          "description": "权限模式"
+        }
+      }
+    }
+  },
+  "dependencies": {}
+}
