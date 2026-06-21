@@ -393,8 +393,11 @@ class MessageRouter {
         this.bridge.callJs('updateSlashCommands', JSON.stringify(this._builtinSlashCommands()));
         break;
       case 'get_all_skills':
-        // 技能面板：阶段 3 接入 .claude/skills 读取，先回空避免前端等待
-        this.bridge.callJs('updateSkills', JSON.stringify([]));
+        // 技能面板：阶段 3 接入 .claude/skills 读取，先回空避免前端等待。
+        // 注意必须回 SkillsConfig 对象形状（global/local/user/repo），
+        // 不能回 []——前端会对 skills.global 调 Object.values()，传数组会报
+        // "Cannot convert undefined or null to object"。
+        this.bridge.callJs('updateSkills', JSON.stringify({ global: {}, local: {}, user: {}, repo: {} }));
         break;
       case 'check_node_environment':
         this.bridge.callJs('nodeEnvironmentStatus', JSON.stringify(

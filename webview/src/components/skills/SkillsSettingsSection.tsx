@@ -55,11 +55,11 @@ export function SkillsSettingsSection({ currentProvider = 'claude' }: SkillsSett
 
   // Compute Skills lists (provider-aware: Claude uses global/local, Codex uses user/repo)
   const primarySkillList = useMemo(
-    () => Object.values(isCodex ? (skills.user ?? {}) : skills.global),
+    () => Object.values(isCodex ? (skills.user ?? {}) : (skills.global ?? {})),
     [isCodex, skills.global, skills.user]
   );
   const secondarySkillList = useMemo(
-    () => Object.values(isCodex ? (skills.repo ?? {}) : skills.local),
+    () => Object.values(isCodex ? (skills.repo ?? {}) : (skills.local ?? {})),
     [isCodex, skills.local, skills.repo]
   );
   const allSkillList = useMemo(() => [...primarySkillList, ...secondarySkillList], [primarySkillList, secondarySkillList]);
