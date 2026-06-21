@@ -13,6 +13,7 @@ const prefs = require('./prefs');
 const skillsService = require('./skills-service');
 const historyService = require('./history-service');
 const agentService = require('./agent-service');
+const mcpService = require('./mcp-service');
 
 /**
  * 事件路由：把 webview 出站事件映射到 ai-bridge 调用，并把流式结果回灌前端。
@@ -435,6 +436,50 @@ class MessageRouter {
         break;
       case 'save_imported_agents':
         this._handleSaveImportedAgents(content);
+        break;
+      // ===== MCP 服务器面板（Claude）=====
+      case 'get_mcp_servers':
+        this._handleGetMcpServers('claude');
+        break;
+      case 'get_mcp_server_status':
+        this._handleGetMcpServerStatus('claude');
+        break;
+      case 'get_mcp_server_tools':
+        this._handleGetMcpServerTools('claude', content);
+        break;
+      case 'add_mcp_server':
+        this._handleUpsertMcpServer('claude', content, false);
+        break;
+      case 'update_mcp_server':
+        this._handleUpsertMcpServer('claude', content, true);
+        break;
+      case 'delete_mcp_server':
+        this._handleDeleteMcpServer('claude', content);
+        break;
+      case 'toggle_mcp_server':
+        this._handleToggleMcpServer('claude', content);
+        break;
+      // ===== MCP 服务器面板（Codex 变体）=====
+      case 'get_codex_mcp_servers':
+        this._handleGetMcpServers('codex');
+        break;
+      case 'get_codex_mcp_server_status':
+        this._handleGetMcpServerStatus('codex');
+        break;
+      case 'get_codex_mcp_server_tools':
+        this._handleGetMcpServerTools('codex', content);
+        break;
+      case 'add_codex_mcp_server':
+        this._handleUpsertMcpServer('codex', content, false);
+        break;
+      case 'update_codex_mcp_server':
+        this._handleUpsertMcpServer('codex', content, true);
+        break;
+      case 'delete_codex_mcp_server':
+        this._handleDeleteMcpServer('codex', content);
+        break;
+      case 'toggle_codex_mcp_server':
+        this._handleToggleMcpServer('codex', content);
         break;
       case 'check_node_environment':
         this.bridge.callJs('nodeEnvironmentStatus', JSON.stringify(
@@ -1490,6 +1535,258 @@ class MessageRouter {
         this.hx.window.showErrorMessage(msg);
       }
     } catch (e) { /* ignore */ }
+  }
+
+  // ===================== MCP 服务器面板 =====================
+  //
+  // 前端来源：webview/src/components/mcp/*。messagePrefix：claude='' / codex='codex_'，
+  // 即 claude 事件 get_mcp_servers，codex 事件 get_codex_mcp_servers，回调相应带/不带 Codex。
+  //
+  // 回调传参（已逐一核对前端，三个回调函数体第一行都对参数 JSON.parse，故后端必须传 JSON 字符串）：
+  //   - updateMcpServers / updateCodexMcpServers      <- JSON.stringify(McpServer[])
+  //   - updateMcpServerStatus / updateCodexMcpServerStatus <- JSON.stringify(McpServerStatusInfo[])
+  //   - updateMcpServerTools （codex 也复用这个回调名）<- JSON.stringify({serverId,serverName,tools,error})
+  //
+  // 存储（对齐 Java + ai-bridge mcp-status/config-loader）：
+  //   - Claude：~/.claude.json 的 mcpServers / disabledMcpServers（含项目级 projects[cwd].*），读-改-写保留其它字段。
+  //   - Codex：~/.codex/config.toml 的 [mcp_servers.<id>]（极简 TOML，enabled 字段控制启停）。
+  //
+  // 实时状态/工具走 ai-bridge daemon RPC：claude.getMcpServerStatus({cwd}) / claude.getMcpServerTools({serverId,cwd})，
+  // daemon 把结果以 [MCP_SERVER_STATUS]<json> / [MCP_SERVER_TOOLS] <json> 标记行经 onLine 回灌；
+  // 解析到则用其结果，接不通/超时则优雅降级（status 回 unknown / tools 回空），绝不让前端卡 loading。
+
+  /** 取回调名（带/不带 Codex 前缀）。 */
+  _mcpCb(provider, claudeName, codexName) {
+    return provider === 'codex' ? codexName : claudeName;
+  }
+
+  /**
+   * get_mcp_servers / get_codex_mcp_servers：读配置文件，回 updateMcpServers / updateCodexMcpServers。
+   * 出错也回 '[]'，前端不卡 loading。
+   */
+  async _handleGetMcpServers(provider) {
+    const cb = this._mcpCb(provider, 'updateMcpServers', 'updateCodexMcpServers');
+    let list = [];
+    try {
+      await this._ensureCwd();
+      list = provider === 'codex'
+        ? mcpService.getCodexServers()
+        : mcpService.getClaudeServers(this.cwd || '');
+      this.output.appendLine(`[router] get_mcp_servers(${provider}): ${list.length} 个`);
+    } catch (e) {
+      this.output.appendLine(`[router] get_mcp_servers(${provider}) 异常: ${e && e.message}`);
+      list = [];
+    }
+    try {
+      this.bridge.callJs(cb, JSON.stringify(list));
+    } catch (e) {
+      this.output.appendLine(`[router] ${cb} 回调失败: ${e && e.message}`);
+    }
+  }
+
+  /**
+   * add/update_mcp_server（及 codex 变体）：content 为整个 McpServer 对象 JSON。
+   * upsert 落盘后**重新读列表回前端**（前端 add/update 后期望看到刷新的 updateMcpServers）。
+   * 出错也回当前列表（best-effort）+ 记日志。
+   */
+  async _handleUpsertMcpServer(provider, content, isUpdate) {
+    let server = null;
+    try { server = JSON.parse(content); } catch (e) { server = null; }
+    try {
+      await this._ensureCwd();
+      if (!server || server.id == null) throw new Error('Missing required field: id');
+      if (provider === 'codex') {
+        mcpService.upsertCodexServer(server);
+      } else {
+        mcpService.upsertClaudeServer(server, this.cwd || '');
+      }
+      this.output.appendLine(`[router] ${isUpdate ? 'update' : 'add'}_mcp_server(${provider}): id=${server.id}`);
+    } catch (e) {
+      this.output.appendLine(`[router] ${isUpdate ? 'update' : 'add'}_mcp_server(${provider}) 异常: ${e && e.message}`);
+      this._notifyError(`保存 MCP 服务器失败: ${e && e.message ? e.message : String(e)}`);
+    }
+    // 无论成功失败都回最新列表，让前端与磁盘一致
+    this._handleGetMcpServers(provider);
+  }
+
+  /**
+   * delete_mcp_server（及 codex 变体）：content 为 { id } JSON。删除后回最新列表。
+   */
+  async _handleDeleteMcpServer(provider, content) {
+    let id = '';
+    try {
+      const obj = JSON.parse(content);
+      id = (obj && obj.id != null) ? String(obj.id) : '';
+    } catch (e) { id = ''; }
+    try {
+      await this._ensureCwd();
+      if (!id) throw new Error('Missing required field: id');
+      if (provider === 'codex') mcpService.deleteCodexServer(id);
+      else mcpService.deleteClaudeServer(id);
+      this.output.appendLine(`[router] delete_mcp_server(${provider}): id=${id}`);
+    } catch (e) {
+      this.output.appendLine(`[router] delete_mcp_server(${provider}) 异常: ${e && e.message}`);
+      this._notifyError(`删除 MCP 服务器失败: ${e && e.message ? e.message : String(e)}`);
+    }
+    this._handleGetMcpServers(provider);
+  }
+
+  /**
+   * toggle_mcp_server（及 codex 变体）：content 为整个 McpServer 对象（带新 enabled/apps）JSON。
+   * 仅维护启停态（Claude 改 disabledMcpServers，Codex 改段内 enabled），落盘后回最新列表。
+   */
+  async _handleToggleMcpServer(provider, content) {
+    let server = null;
+    try { server = JSON.parse(content); } catch (e) { server = null; }
+    try {
+      await this._ensureCwd();
+      if (!server || server.id == null) throw new Error('Missing required field: id');
+      if (provider === 'codex') mcpService.toggleCodexServer(server);
+      else mcpService.toggleClaudeServer(server, this.cwd || '');
+      this.output.appendLine(`[router] toggle_mcp_server(${provider}): id=${server.id} enabled=${server.enabled !== false}`);
+    } catch (e) {
+      this.output.appendLine(`[router] toggle_mcp_server(${provider}) 异常: ${e && e.message}`);
+      this._notifyError(`切换 MCP 服务器失败: ${e && e.message ? e.message : String(e)}`);
+    }
+    this._handleGetMcpServers(provider);
+  }
+
+  /**
+   * get_mcp_server_status / get_codex_mcp_server_status：查实时连接状态。
+   * 走 daemon RPC claude.getMcpServerStatus({cwd})，解析 [MCP_SERVER_STATUS]<json> 标记行；
+   * 接不通/超时 → 对每个已配置服务器回 status:'unknown' 降级（前端不卡 loading）。
+   * 注意：Codex 暂无 daemon 状态 RPC，统一对其全部服务器回 unknown 降级。
+   */
+  async _handleGetMcpServerStatus(provider) {
+    const cb = this._mcpCb(provider, 'updateMcpServerStatus', 'updateCodexMcpServerStatus');
+    let statusList = null;
+    try {
+      await this._ensureCwd();
+      if (provider === 'claude' && this.aiBridge) {
+        statusList = await this._queryMcpStatusViaDaemon(this.cwd || '');
+      }
+    } catch (e) {
+      this.output.appendLine(`[router] get_mcp_server_status(${provider}) 异常: ${e && e.message}`);
+      statusList = null;
+    }
+
+    // 降级：daemon 未就绪/失败/Codex → 用当前配置列表回 unknown 状态
+    if (!Array.isArray(statusList)) {
+      try {
+        const servers = provider === 'codex'
+          ? mcpService.getCodexServers()
+          : mcpService.getClaudeServers(this.cwd || '');
+        statusList = servers.map((s) => ({
+          name: s.id,
+          status: s.enabled === false ? 'failed' : 'unknown',
+          error: s.enabled === false ? 'Server is disabled' : undefined,
+        }));
+        this.output.appendLine(`[router] get_mcp_server_status(${provider}) 降级 unknown: ${statusList.length} 个`);
+      } catch (e) {
+        statusList = [];
+      }
+    } else {
+      this.output.appendLine(`[router] get_mcp_server_status(${provider}) daemon: ${statusList.length} 个`);
+    }
+
+    try {
+      this.bridge.callJs(cb, JSON.stringify(statusList));
+    } catch (e) {
+      this.output.appendLine(`[router] ${cb} 回调失败: ${e && e.message}`);
+    }
+  }
+
+  /**
+   * get_mcp_server_tools / get_codex_mcp_server_tools：查某服务器工具列表。
+   * content 为 { serverId, forceRefresh }。走 daemon RPC claude.getMcpServerTools({serverId,cwd})，
+   * 解析 [MCP_SERVER_TOOLS] <json>；接不通/超时 → 回 {serverId, tools:[], error} 降级。
+   * Codex 暂无 daemon 工具 RPC → 直接回空工具列表 success。前端回调（updateMcpServerTools）做 JSON.parse。
+   */
+  async _handleGetMcpServerTools(provider, content) {
+    const cb = this._mcpCb(provider, 'updateMcpServerTools', 'updateMcpServerTools'); // codex 也复用 updateMcpServerTools
+    let serverId = '';
+    try {
+      const obj = JSON.parse(content);
+      serverId = (obj && obj.serverId != null) ? String(obj.serverId) : '';
+    } catch (e) { serverId = ''; }
+
+    let result = null;
+    try {
+      await this._ensureCwd();
+      if (!serverId) throw new Error('Missing required field: serverId');
+      if (provider === 'claude' && this.aiBridge) {
+        result = await this._queryMcpToolsViaDaemon(serverId, this.cwd || '');
+      }
+    } catch (e) {
+      this.output.appendLine(`[router] get_mcp_server_tools(${provider}) 异常: ${e && e.message}`);
+      result = null;
+    }
+
+    // 降级：daemon 未就绪/失败/Codex → 回空工具列表（前端按 0 工具且无 error 视为空结果，不卡）
+    if (!result || typeof result !== 'object') {
+      result = { serverId, serverName: serverId, tools: [] };
+      this.output.appendLine(`[router] get_mcp_server_tools(${provider}) 降级空列表: serverId=${serverId}`);
+    } else {
+      // 确保 serverId 字段存在（前端按它定位是哪台服务器）
+      if (result.serverId == null) result.serverId = serverId;
+      this.output.appendLine(`[router] get_mcp_server_tools(${provider}): serverId=${serverId} tools=${(result.tools || []).length}`);
+    }
+
+    try {
+      this.bridge.callJs(cb, JSON.stringify(result));
+    } catch (e) {
+      this.output.appendLine(`[router] ${cb} 回调失败: ${e && e.message}`);
+    }
+  }
+
+  /**
+   * 经 daemon 查 MCP 状态：发 claude.getMcpServerStatus，从 onLine 标记行抓 [MCP_SERVER_STATUS]<json>。
+   * 返回解析出的数组；未拿到则返回 null（让上层走降级）。
+   * daemon 该命令输出形如：console.log('[MCP_SERVER_STATUS]' + JSON.stringify(arr))（标记紧贴 json，无空格）。
+   */
+  async _queryMcpStatusViaDaemon(cwd) {
+    let captured = null;
+    const onLine = (line) => {
+      const s = typeof line === 'string' ? line : '';
+      const idx = s.indexOf('[MCP_SERVER_STATUS]');
+      if (idx !== -1) {
+        const jsonStr = s.slice(idx + '[MCP_SERVER_STATUS]'.length).trim();
+        try {
+          const arr = JSON.parse(jsonStr);
+          if (Array.isArray(arr)) captured = arr;
+        } catch (e) { /* 非完整 json 行，忽略 */ }
+      }
+    };
+    const result = await this.aiBridge.request('claude.getMcpServerStatus', { cwd: cwd || '' }, onLine);
+    if (!result || result.success === false) {
+      this.output.appendLine(`[router] daemon getMcpServerStatus 失败: ${result && result.error}`);
+    }
+    return captured; // 可能为 null（上层降级）
+  }
+
+  /**
+   * 经 daemon 查 MCP 工具：发 claude.getMcpServerTools，从 onLine 抓 [MCP_SERVER_TOOLS] <json>。
+   * 返回 { serverId, serverName, tools, error }；未拿到则返回 null（上层降级）。
+   * daemon 输出形如：console.log('[MCP_SERVER_TOOLS]', resultJson) → 标记 + 空格 + json，随后还会单独打一行裸 json。
+   */
+  async _queryMcpToolsViaDaemon(serverId, cwd) {
+    let captured = null;
+    const onLine = (line) => {
+      const s = typeof line === 'string' ? line : '';
+      const idx = s.indexOf('[MCP_SERVER_TOOLS]');
+      if (idx !== -1) {
+        const jsonStr = s.slice(idx + '[MCP_SERVER_TOOLS]'.length).trim();
+        try {
+          const obj = JSON.parse(jsonStr);
+          if (obj && typeof obj === 'object') captured = obj;
+        } catch (e) { /* 忽略不完整行 */ }
+      }
+    };
+    const result = await this.aiBridge.request('claude.getMcpServerTools', { serverId, cwd: cwd || '' }, onLine);
+    if (!result || result.success === false) {
+      this.output.appendLine(`[router] daemon getMcpServerTools 失败: ${result && result.error}`);
+    }
+    return captured;
   }
 
   // ===================== 主题同步 =====================
