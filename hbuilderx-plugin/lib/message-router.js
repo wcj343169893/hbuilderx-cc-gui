@@ -11,6 +11,7 @@ const { PermissionBridge } = require('./permission-bridge');
 const { resolveTheme } = require('./webview-host');
 const prefs = require('./prefs');
 const skillsService = require('./skills-service');
+const historyService = require('./history-service');
 
 /**
  * 事件路由：把 webview 出站事件映射到 ai-bridge 调用，并把流式结果回灌前端。
@@ -40,6 +41,9 @@ class MessageRouter {
     this.permissionMode = this._prefs.permissionMode || this._readPermissionMode();
     this.cwd = ''; // getWorkspaceFolders() 是异步的，构造里拿不到，改在 init()/发送前 await 解析
     this._busy = false;
+
+    // 历史面板当前 provider（前端在 load_history_data/deep_search_history 时下发，后续 load/delete/export 沿用）
+    this._historyProvider = 'claude';
 
     // Provider 管理（cc-switch 兼容）：列表 + 当前激活 id，持久化在 pref.json
     this.providers = Array.isArray(this._prefs.providers) ? this._prefs.providers : [];
@@ -429,6 +433,38 @@ class MessageRouter {
       case 'get_ide_theme':
         this._handleGetIdeTheme();
         break;
+      // ===== 历史会话（History）=====
+      case 'load_history_data':
+        this._handleLoadHistoryData(content);
+        break;
+      case 'deep_search_history':
+        // 无内存缓存层，深扫等同重新加载列表（对齐 Java：清缓存后 reload）
+        this._handleLoadHistoryData(content);
+        break;
+      case 'delete_session':
+        this._handleDeleteSession(content);
+        break;
+      case 'delete_sessions':
+        this._handleDeleteSessions(content);
+        break;
+      case 'export_session':
+        this._handleExportSession(content);
+        break;
+      case 'toggle_favorite':
+        this._handleToggleFavorite(content);
+        break;
+      case 'update_title':
+        this._handleUpdateTitle(content);
+        break;
+      case 'delete_title':
+        this._handleDeleteTitle(content);
+        break;
+      case 'convert_to_cli_session':
+        this._handleConvertToCliSession(content);
+        break;
+      case 'load_subagent_session':
+        this._handleLoadSubagentSession(content);
+        break;
       default:
         // 其余事件（设置面板、文件操作、历史等）留待后续阶段
         this.output.appendLine(`[router] 暂未处理: ${event}`);
@@ -442,23 +478,269 @@ class MessageRouter {
   }
 
   /**
-   * 恢复指定会话（按 id 续聊）。
-   * MVP：仅设置 sessionId 使后续消息在服务端续上该会话；不在 UI 重放历史消息
-   *（历史重放 UI 依赖 getSession 原始 JSONL -> 前端消息格式的转换，属阶段 3）。
+   * 恢复指定会话：读取 JSONL，逐条 addHistoryMessage 重放到 UI，再 historyLoadComplete；
+   * 同时设置 this.sessionId 使后续消息在服务端续上该会话。
+   *
+   * 时序要点（与 webview 的 session transition guard 协同）：
+   *   - 前端 loadHistorySession 已先 beginSessionTransition（置 window.__sessionTransitioning=true 并清空消息）。
+   *   - addHistoryMessage 在 transitioning 期间会被前端直接丢弃，故必须先 setSessionId（其内部会
+   *     releaseSessionTransition 释放 guard）再重放。
+   *   - 最后 historyLoadComplete 触发 Markdown 重渲染并兜底释放 guard。
+   * 出错也调用 historyLoadComplete + addErrorMessage，绝不让前端卡在 transition guard。
    */
-  _handleLoadSession(content) {
+  async _handleLoadSession(content) {
     let sessionId = content;
+    let provider = this._historyProvider;
     try {
       const obj = JSON.parse(content);
       sessionId = obj.sessionId || obj.id || content;
+      if (obj.provider) provider = obj.provider;
     } catch (e) { /* content 即为 sessionId */ }
-    if (!sessionId) return;
+    if (!sessionId) {
+      this.bridge.callJs('historyLoadComplete');
+      return;
+    }
+
     this.sessionId = sessionId;
     this.assembler.reset();
-    this.bridge.callJs('clearMessages');
-    this.bridge.callJs('setSessionId', sessionId);
-    this.bridge.callJs('historyLoadComplete');
-    this.output.appendLine(`[router] 恢复会话: ${sessionId}（UI 不重放历史，续聊生效）`);
+
+    try {
+      await this._ensureCwd();
+
+      // 释放 transition guard（setSessionId 内部会 releaseSessionTransition），随后重放才不被丢弃。
+      this.bridge.callJs('setSessionId', sessionId);
+
+      if (provider !== 'claude') {
+        // Codex 等暂不支持 UI 重放：仅续聊，立即完成（不报错，避免卡 loading）
+        this.output.appendLine(`[router] load_session: provider=${provider} 暂不支持 UI 重放，仅续聊`);
+        this.bridge.callJs('historyLoadComplete');
+        return;
+      }
+
+      const messages = historyService.loadSessionMessages(this.cwd || '', sessionId);
+      for (const msg of messages) {
+        // addHistoryMessage 期望 ClaudeMessage 对象（前端不做 JSON.parse），直接透传对象。
+        this.bridge.callJs('addHistoryMessage', msg);
+      }
+      this.bridge.callJs('historyLoadComplete');
+      this.output.appendLine(`[router] load_session: ${sessionId} 重放 ${messages.length} 条历史消息`);
+    } catch (e) {
+      this.output.appendLine(`[router] load_session 异常: ${e && e.message}`);
+      // 兜底释放 guard + 报错，前端不卡
+      this.bridge.callJs('historyLoadComplete');
+      this.bridge.callJs('addErrorMessage', `加载会话失败: ${e && e.message ? e.message : String(e)}`);
+    }
+  }
+
+  // ===================== 历史会话（History）handler =====================
+
+  /**
+   * load_history_data / deep_search_history：扫描项目会话 + 合并收藏/标题，回 setHistoryData。
+   * 出错也回 setHistoryData({success:false,error}) —— 前端据此显示错误而非卡 loading。
+   */
+  async _handleLoadHistoryData(content) {
+    const provider = (typeof content === 'string' && content) ? content : 'claude';
+    this._historyProvider = provider;
+    let data;
+    try {
+      await this._ensureCwd();
+      data = historyService.loadHistoryData(this.cwd || '', provider);
+      this.output.appendLine(`[router] load_history_data: provider=${provider} sessions=${(data.sessions || []).length}`);
+    } catch (e) {
+      this.output.appendLine(`[router] load_history_data 异常: ${e && e.message}`);
+      data = { success: false, error: e && e.message ? e.message : String(e), sessions: [], total: 0, favorites: {} };
+    }
+    try {
+      // setHistoryData 期望 HistoryData 对象（前端不做 JSON.parse），直接透传对象。
+      this.bridge.callJs('setHistoryData', data);
+    } catch (e) {
+      this.output.appendLine(`[router] load_history_data 回调失败: ${e && e.message}`);
+    }
+  }
+
+  /**
+   * delete_session：删除会话 JSONL（+ 关联 agent 文件 + sidecar 收藏/标题）。
+   * 前端已乐观更新本地列表，无需回列表；仅记录日志。
+   */
+  async _handleDeleteSession(content) {
+    const sessionId = typeof content === 'string' ? content.trim() : '';
+    if (!sessionId) return;
+    try {
+      await this._ensureCwd();
+      const r = historyService.deleteSession(this.cwd || '', sessionId);
+      this.output.appendLine(`[router] delete_session: ${sessionId} main=${r.mainDeleted} agents=${r.agentFilesDeleted} ${r.error ? 'err=' + r.error : ''}`);
+    } catch (e) {
+      this.output.appendLine(`[router] delete_session 异常: ${e && e.message}`);
+    }
+  }
+
+  /** delete_sessions：批量删除。content 为 JSON 数组字符串。前端已乐观更新，无需回列表。 */
+  async _handleDeleteSessions(content) {
+    try {
+      await this._ensureCwd();
+      const r = historyService.deleteSessions(this.cwd || '', content);
+      this.output.appendLine(`[router] delete_sessions: deleted=${r.mainDeletedCount}/${r.total}`);
+    } catch (e) {
+      this.output.appendLine(`[router] delete_sessions 异常: ${e && e.message}`);
+    }
+  }
+
+  /**
+   * export_session：读取会话原始消息，回 onExportSessionData(JSON 字符串)。
+   * 前端对该参数做 JSON.parse，故必须 stringify；失败时回 { error } 让前端 toast。
+   */
+  async _handleExportSession(content) {
+    let sessionId = '';
+    let title = '';
+    try {
+      const obj = JSON.parse(content);
+      sessionId = (obj && obj.sessionId) || '';
+      title = (obj && obj.title) || '';
+    } catch (e) { /* 解析失败下方按空处理 */ }
+
+    let result;
+    try {
+      await this._ensureCwd();
+      if (this._historyProvider !== 'claude') {
+        result = { error: '当前 provider 暂不支持导出' };
+      } else {
+        result = historyService.exportSession(this.cwd || '', sessionId, title);
+      }
+    } catch (e) {
+      this.output.appendLine(`[router] export_session 异常: ${e && e.message}`);
+      result = { error: e && e.message ? e.message : String(e) };
+    }
+    try {
+      this.bridge.callJs('onExportSessionData', JSON.stringify(result));
+      this.output.appendLine(`[router] export_session: ${sessionId} ${result.error ? 'err=' + result.error : 'msgs=' + (result.messages ? result.messages.length : 0)}`);
+    } catch (e) {
+      this.output.appendLine(`[router] export_session 回调失败: ${e && e.message}`);
+    }
+  }
+
+  /** toggle_favorite：持久化收藏态到 ~/.codemoss/favorites.json（前端已乐观更新，无需回）。 */
+  _handleToggleFavorite(content) {
+    const sessionId = typeof content === 'string' ? content.trim() : '';
+    if (!sessionId) return;
+    try {
+      const r = historyService.toggleFavorite(sessionId);
+      this.output.appendLine(`[router] toggle_favorite: ${sessionId} -> ${r.isFavorited} ${r.error ? 'err=' + r.error : ''}`);
+    } catch (e) {
+      this.output.appendLine(`[router] toggle_favorite 异常: ${e && e.message}`);
+    }
+  }
+
+  /**
+   * update_title：持久化自定义标题到 ~/.codemoss/session-titles.json。
+   * 前端已乐观更新；仅当持久化失败时回 addToast 提示（对齐 Java）。
+   */
+  _handleUpdateTitle(content) {
+    let sessionId = '';
+    let customTitle = '';
+    try {
+      const obj = JSON.parse(content);
+      sessionId = (obj && obj.sessionId) || '';
+      customTitle = (obj && typeof obj.customTitle === 'string') ? obj.customTitle : '';
+    } catch (e) { /* 解析失败下方按空处理 */ }
+    if (!sessionId) return;
+
+    try {
+      const r = historyService.updateTitle(sessionId, customTitle);
+      this.output.appendLine(`[router] update_title: ${sessionId} success=${r.success} ${r.error ? 'err=' + r.error : ''}`);
+      if (!r.success && r.error) {
+        this.bridge.callJs('addToast', `更新标题失败: ${r.error}`, 'error');
+      }
+    } catch (e) {
+      this.output.appendLine(`[router] update_title 异常: ${e && e.message}`);
+      this.bridge.callJs('addToast', `更新标题失败: ${e && e.message ? e.message : String(e)}`, 'error');
+    }
+  }
+
+  /** delete_title：删除孤立的自定义标题条目（B-011 会话 id 迁移清理）。 */
+  _handleDeleteTitle(content) {
+    const sessionId = typeof content === 'string' ? content.trim() : '';
+    if (!sessionId) return;
+    try {
+      historyService.deleteTitle(sessionId);
+      this.output.appendLine(`[router] delete_title: ${sessionId}`);
+    } catch (e) {
+      this.output.appendLine(`[router] delete_title 异常: ${e && e.message}`);
+    }
+  }
+
+  /**
+   * convert_to_cli_session：HBuilderX 移植不实现 SDK->CLI 会话转换。
+   * 优雅降级：回 onConversionResult 明确的不支持结果（success:false + 已知 errorCode），
+   * 前端据 errorCode 显示文案并 reload，不会崩。
+   */
+  _handleConvertToCliSession(content) {
+    const sessionId = typeof content === 'string' ? content.trim() : '';
+    // CONVERSION_FAILED 是前端 conversionErrors 已知 code，触发其失败分支（含 reload 回滚乐观更新）。
+    const result = { success: false, errorCode: 'CONVERSION_FAILED', sessionId: sessionId };
+    try {
+      this.bridge.callJs('onConversionResult', JSON.stringify(result));
+      this.output.appendLine(`[router] convert_to_cli_session: ${sessionId} 不支持，回降级结果`);
+    } catch (e) {
+      this.output.appendLine(`[router] convert_to_cli_session 回调失败: ${e && e.message}`);
+    }
+  }
+
+  /**
+   * load_subagent_session：读取 sidechain agent 日志，回 onSubagentHistoryLoaded(JSON 字符串)。
+   * 文件位置对齐 Java SubagentHistoryService：
+   *   ~/.claude/projects/<sanitized cwd>/<sessionId>/subagents/agent-<agentId>.jsonl
+   * 未找到/出错也回 success:false，前端可重试，不卡。
+   */
+  async _handleLoadSubagentSession(content) {
+    let req = {};
+    try { req = JSON.parse(content) || {}; } catch (e) { req = {}; }
+    const sessionId = req.sessionId;
+    const agentId = req.agentId;
+    const toolUseId = req.toolUseId;
+
+    const response = { toolUseId: toolUseId, agentId: agentId, sessionId: sessionId };
+    const SAFE_ID = /^[A-Za-z0-9_-]+$/;
+    try {
+      await this._ensureCwd();
+      if (!sessionId || !SAFE_ID.test(sessionId)) throw new Error('Invalid sessionId');
+      if (!agentId || !SAFE_ID.test(agentId)) {
+        // 仅支持按 agentId 定位（按 description 匹配属 niche，省略）
+        throw new Error('Missing or invalid agentId');
+      }
+      const dir = historyService.getProjectSessionDir(this.cwd || '');
+      if (!dir) throw new Error('Project session dir unavailable');
+      const file = require('path').join(dir, sessionId, 'subagents', 'agent-' + agentId + '.jsonl');
+      const raws = this._readJsonlArray(file);
+      if (raws == null) {
+        response.success = false;
+        response.error = 'Subagent log not found';
+      } else {
+        response.success = true;
+        response.messages = raws;
+      }
+    } catch (e) {
+      response.success = false;
+      response.error = e && e.message ? e.message : String(e);
+    }
+    try {
+      this.bridge.callJs('onSubagentHistoryLoaded', JSON.stringify(response));
+    } catch (e) {
+      this.output.appendLine(`[router] load_subagent_session 回调失败: ${e && e.message}`);
+    }
+  }
+
+  /** 读取一个 JSONL 文件为对象数组（不存在返回 null，坏行跳过）。 */
+  _readJsonlArray(file) {
+    if (!fs.existsSync(file)) return null;
+    let raw;
+    try { raw = fs.readFileSync(file, 'utf-8'); } catch (e) { return null; }
+    const out = [];
+    for (const line of raw.split(/\r?\n/)) {
+      const s = line.trim();
+      if (!s) continue;
+      try { out.push(JSON.parse(s)); } catch (e) { /* 跳过坏行 */ }
+    }
+    return out;
   }
 
   async _handleSend(content) {
