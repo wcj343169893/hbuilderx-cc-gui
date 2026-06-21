@@ -10,6 +10,7 @@ const { ClaudeSessionAssembler } = require('./claude-session');
 const { PermissionBridge } = require('./permission-bridge');
 const { resolveTheme } = require('./webview-host');
 const prefs = require('./prefs');
+const skillsService = require('./skills-service');
 
 /**
  * 事件路由：把 webview 出站事件映射到 ai-bridge 调用，并把流式结果回灌前端。
@@ -392,12 +393,21 @@ class MessageRouter {
       case 'refresh_slash_commands':
         this.bridge.callJs('updateSlashCommands', JSON.stringify(this._builtinSlashCommands()));
         break;
+      // ===== 技能面板（Skills）=====
       case 'get_all_skills':
-        // 技能面板：阶段 3 接入 .claude/skills 读取，先回空避免前端等待。
-        // 注意必须回 SkillsConfig 对象形状（global/local/user/repo），
-        // 不能回 []——前端会对 skills.global 调 Object.values()，传数组会报
-        // "Cannot convert undefined or null to object"。
-        this.bridge.callJs('updateSkills', JSON.stringify({ global: {}, local: {}, user: {}, repo: {} }));
+        this._handleGetAllSkills();
+        break;
+      case 'import_skill':
+        this._handleImportSkill(content);
+        break;
+      case 'toggle_skill':
+        this._handleToggleSkill(content);
+        break;
+      case 'delete_skill':
+        this._handleDeleteSkill(content);
+        break;
+      case 'open_skill':
+        this._handleOpenSkill(content);
         break;
       case 'check_node_environment':
         this.bridge.callJs('nodeEnvironmentStatus', JSON.stringify(
@@ -703,6 +713,202 @@ class MessageRouter {
       this.bridge.callJs('onFilePathResolved', JSON.stringify({ path: original, resolvedPath }));
     } catch (e) {
       this.output.appendLine(`[router] resolve_file_path 回调失败: ${e && e.message}`);
+    }
+  }
+
+  // ===================== 技能面板（Skills）=====================
+
+  /** 兜底解析 cwd：init 时没打开项目，操作技能前再取一次（local 作用域依赖它）。 */
+  async _ensureCwd() {
+    if (!this.cwd) {
+      this.cwd = await this._resolveCwd();
+    }
+    return this.cwd;
+  }
+
+  /**
+   * get_all_skills：扫描 ~/.claude/skills（global）与 {cwd}/.claude/skills（local），
+   * 含停用态（管理目录），回 SkillsConfig 形状（global/local/user/repo）。
+   * 出错也回空壳形状，避免前端 Object.values(undefined) 崩溃。
+   */
+  async _handleGetAllSkills() {
+    let payload = { global: {}, local: {}, user: {}, repo: {} };
+    try {
+      await this._ensureCwd();
+      payload = skillsService.getAllSkills(this.cwd || '');
+    } catch (e) {
+      this.output.appendLine(`[router] get_all_skills 异常: ${e && e.message}`);
+    }
+    try {
+      this.bridge.callJs('updateSkills', JSON.stringify(payload));
+    } catch (e) {
+      this.output.appendLine(`[router] get_all_skills 回调失败: ${e && e.message}`);
+    }
+  }
+
+  /**
+   * import_skill：前端只发 { scope }，由后端弹文件/目录选择框拿源路径再复制到启用目录。
+   * HBuilderX 无原生 showOpenDialog，用 hx.window.showFormDialog 的 fileSelectInput 控件
+   *（mode:'folder'，对齐 Agent Skills 规范「skill 是目录」）让用户选一个 skill 目录。
+   * 取消/出错也回 skillImportResult，不让前端卡在 loading。
+   */
+  async _handleImportSkill(content) {
+    let scope = 'global';
+    try {
+      const obj = JSON.parse(content);
+      if (obj && obj.scope) scope = obj.scope;
+    } catch (e) { /* content 解析失败用默认 global */ }
+
+    const replyError = (msg) => {
+      try {
+        this.bridge.callJs('skillImportResult', JSON.stringify({ success: false, error: msg }));
+      } catch (e) { /* ignore */ }
+    };
+
+    try {
+      await this._ensureCwd();
+      if (scope === 'local' && !this.cwd) {
+        replyError('未打开项目，无法导入本地技能');
+        return;
+      }
+
+      let selectedPath = null;
+      // 优先用 showFormDialog 的 fileSelectInput（实证自 extension_js.d.ts）
+      if (this.hx.window && typeof this.hx.window.showFormDialog === 'function') {
+        const dialogResult = await this.hx.window.showFormDialog({
+          title: '导入技能',
+          subtitle: '选择一个 Skill 文件夹（应包含 SKILL.md）',
+          width: 540,
+          height: 220,
+          submitButtonText: '导入',
+          cancelButtonText: '取消',
+          formItems: [
+            {
+              type: 'fileSelectInput',
+              name: 'skillPath',
+              mode: 'folder',
+              label: 'Skill 文件夹',
+              placeholder: '请选择 Skill 文件夹',
+              value: this.cwd || '',
+            },
+          ],
+        });
+        // code === 0 视为正常提交（不同版本约定不一，data 有路径即采纳）
+        const data = dialogResult && dialogResult.data;
+        if (data) {
+          selectedPath = typeof data === 'string'
+            ? data
+            : (data.skillPath || data.path || '');
+        }
+        if (!selectedPath) {
+          // 用户取消或未选：静默回失败但不弹错误 toast（前端 success:false 仅在有 error 时提示）
+          this.output.appendLine('[router] import_skill 已取消或未选择路径');
+          this.bridge.callJs('skillImportResult', JSON.stringify({ success: false }));
+          return;
+        }
+      } else {
+        replyError('当前 HBuilderX 版本不支持文件选择对话框');
+        return;
+      }
+
+      const result = skillsService.importSkills([selectedPath], scope, this.cwd || '');
+      this.output.appendLine(`[router] import_skill: scope=${scope} count=${result.count} total=${result.total} src=${selectedPath}`);
+      this.bridge.callJs('skillImportResult', JSON.stringify(result));
+    } catch (e) {
+      this.output.appendLine(`[router] import_skill 异常: ${e && e.message}`);
+      replyError(e && e.message ? e.message : String(e));
+    }
+  }
+
+  /**
+   * toggle_skill：载荷 { name, scope, enabled }（enabled=当前状态）。
+   * 启用/停用是目录移动，结果回 skillToggleResult（前端期望 {success, enabled, name, error?, conflict?}）。
+   */
+  async _handleToggleSkill(content) {
+    let json = {};
+    try { json = JSON.parse(content) || {}; } catch (e) { json = {}; }
+    const name = json.name;
+    const scope = json.scope || 'global';
+    const currentEnabled = json.enabled != null ? !!json.enabled : true;
+
+    let result;
+    try {
+      await this._ensureCwd();
+      result = skillsService.toggleSkill(name, scope, currentEnabled, this.cwd || '');
+    } catch (e) {
+      this.output.appendLine(`[router] toggle_skill 异常: ${e && e.message}`);
+      result = { success: false, error: e && e.message ? e.message : String(e) };
+    }
+    try {
+      this.bridge.callJs('skillToggleResult', JSON.stringify(result));
+    } catch (e) {
+      this.output.appendLine(`[router] toggle_skill 回调失败: ${e && e.message}`);
+    }
+  }
+
+  /**
+   * delete_skill：载荷 { name, scope, enabled }。按 enabled 选启用/管理目录删除。
+   * 结果回 skillDeleteResult（前端期望 {success, error?}）。
+   */
+  async _handleDeleteSkill(content) {
+    let json = {};
+    try { json = JSON.parse(content) || {}; } catch (e) { json = {}; }
+    const name = json.name;
+    const scope = json.scope || 'global';
+    const enabled = json.enabled != null ? !!json.enabled : true;
+
+    let result;
+    try {
+      await this._ensureCwd();
+      result = skillsService.deleteSkill(name, scope, enabled, this.cwd || '');
+    } catch (e) {
+      this.output.appendLine(`[router] delete_skill 异常: ${e && e.message}`);
+      result = { success: false, error: e && e.message ? e.message : String(e) };
+    }
+    try {
+      this.bridge.callJs('skillDeleteResult', JSON.stringify(result));
+    } catch (e) {
+      this.output.appendLine(`[router] delete_skill 回调失败: ${e && e.message}`);
+    }
+  }
+
+  /**
+   * open_skill：载荷 { path }。在编辑器打开该技能；若 path 是目录则打开其 skill.md/SKILL.md。
+   * 复用 open_file 的打开逻辑（this._handleOpenFile）。
+   */
+  _handleOpenSkill(content) {
+    try {
+      let skillPath = '';
+      try {
+        const obj = JSON.parse(content);
+        skillPath = (obj && obj.path) || '';
+      } catch (e) {
+        skillPath = typeof content === 'string' ? content : '';
+      }
+      if (!skillPath) {
+        this.output.appendLine('[router] open_skill 缺少 path');
+        return;
+      }
+      // 拒绝可疑路径（路径穿越/空字节）
+      if (skillPath.indexOf('..') !== -1 || skillPath.indexOf('\0') !== -1) {
+        this.output.appendLine(`[router] open_skill 拒绝可疑路径: ${skillPath}`);
+        return;
+      }
+
+      let targetPath = skillPath;
+      // 目录则改打开其 skill.md / SKILL.md（对齐 Java handleOpenSkill）
+      try {
+        if (fs.existsSync(skillPath) && fs.statSync(skillPath).isDirectory()) {
+          let md = path.join(skillPath, 'skill.md');
+          if (!fs.existsSync(md)) md = path.join(skillPath, 'SKILL.md');
+          if (fs.existsSync(md)) targetPath = md;
+        }
+      } catch (e) { /* 判定失败仍尝试打开原 path */ }
+
+      // 复用 open_file 同款打开逻辑
+      this._handleOpenFile(targetPath);
+    } catch (e) {
+      this.output.appendLine(`[router] open_skill 异常: ${e && e.message}`);
     }
   }
 
