@@ -12,6 +12,7 @@ const { resolveTheme } = require('./webview-host');
 const prefs = require('./prefs');
 const skillsService = require('./skills-service');
 const historyService = require('./history-service');
+const agentService = require('./agent-service');
 
 /**
  * 事件路由：把 webview 出站事件映射到 ai-bridge 调用，并把流式结果回灌前端。
@@ -412,6 +413,28 @@ class MessageRouter {
         break;
       case 'open_skill':
         this._handleOpenSkill(content);
+        break;
+      // ===== Agent（子智能体）面板 =====
+      case 'get_agents':
+        this._handleGetAgents();
+        break;
+      case 'add_agent':
+        this._handleAddAgent(content);
+        break;
+      case 'update_agent':
+        this._handleUpdateAgent(content);
+        break;
+      case 'delete_agent':
+        this._handleDeleteAgent(content);
+        break;
+      case 'export_agents':
+        this._handleExportAgents(content);
+        break;
+      case 'import_agents_file':
+        this._handleImportAgentsFile();
+        break;
+      case 'save_imported_agents':
+        this._handleSaveImportedAgents(content);
         break;
       case 'check_node_environment':
         this.bridge.callJs('nodeEnvironmentStatus', JSON.stringify(
@@ -1192,6 +1215,281 @@ class MessageRouter {
     } catch (e) {
       this.output.appendLine(`[router] open_skill 异常: ${e && e.message}`);
     }
+  }
+
+  // ===================== Agent（子智能体）面板 =====================
+  //
+  // 存储：~/.codemoss/agent.json（单一 JSON 文件，非 .md），对齐 Java AgentManager。
+  // 本面板 4 个回调全部接收 **JSON 字符串**（前端 useSettingsWindowCallbacks.ts 对每个回调都做
+  // JSON.parse）：updateAgents / agentOperationResult / agentImportPreviewResult / agentImportResult。
+  // 导出无前端回调（对齐 Java：仅落文件 + 原生提示），用 hx.window 提示成功/失败。
+
+  /**
+   * get_agents：读取 agent.json 全部 agent（createdAt 降序），回 updateAgents(JSON 字符串)。
+   * 出错也回 '[]'，避免前端卡 loading（前端有 3s 超时但仍尽量及时回）。
+   */
+  _handleGetAgents() {
+    let json = '[]';
+    try {
+      json = JSON.stringify(agentService.getAgents());
+    } catch (e) {
+      this.output.appendLine(`[router] get_agents 异常: ${e && e.message}`);
+      json = '[]';
+    }
+    try {
+      this.bridge.callJs('updateAgents', json);
+    } catch (e) {
+      this.output.appendLine(`[router] get_agents 回调失败: ${e && e.message}`);
+    }
+  }
+
+  /**
+   * add_agent：content 为 {id,name,prompt} JSON。写入后回 agentOperationResult。
+   * 成功 {success:true,operation:'add'}；失败带 error。前端会随后自行 loadAgents 刷新列表。
+   */
+  _handleAddAgent(content) {
+    let result;
+    try {
+      const agent = JSON.parse(content);
+      agentService.addAgent(agent);
+      result = { success: true, operation: 'add' };
+    } catch (e) {
+      this.output.appendLine(`[router] add_agent 异常: ${e && e.message}`);
+      result = { success: false, operation: 'add', error: e && e.message ? e.message : String(e) };
+    }
+    this._emitAgentOperationResult(result);
+  }
+
+  /**
+   * update_agent：content 为 {id, updates:{...}} JSON。合并更新后回 agentOperationResult。
+   */
+  _handleUpdateAgent(content) {
+    let result;
+    try {
+      const data = JSON.parse(content);
+      const id = data && data.id;
+      const updates = (data && data.updates) || {};
+      if (id == null) throw new Error('Missing required field: id');
+      agentService.updateAgent(String(id), updates);
+      result = { success: true, operation: 'update' };
+    } catch (e) {
+      this.output.appendLine(`[router] update_agent 异常: ${e && e.message}`);
+      result = { success: false, operation: 'update', error: e && e.message ? e.message : String(e) };
+    }
+    this._emitAgentOperationResult(result);
+  }
+
+  /**
+   * delete_agent：content 为 {id} JSON。删除后回 agentOperationResult。
+   * 不存在时回 success:false + error:'Agent not found'（对齐 Java）。
+   */
+  _handleDeleteAgent(content) {
+    let result;
+    try {
+      const data = JSON.parse(content);
+      const id = data && data.id;
+      if (id == null) throw new Error('Missing required field: id');
+      const deleted = agentService.deleteAgent(String(id));
+      result = deleted
+        ? { success: true, operation: 'delete' }
+        : { success: false, operation: 'delete', error: 'Agent not found' };
+    } catch (e) {
+      this.output.appendLine(`[router] delete_agent 异常: ${e && e.message}`);
+      result = { success: false, operation: 'delete', error: e && e.message ? e.message : String(e) };
+    }
+    this._emitAgentOperationResult(result);
+  }
+
+  /** 统一回 agentOperationResult(JSON 字符串)。 */
+  _emitAgentOperationResult(result) {
+    try {
+      this.bridge.callJs('agentOperationResult', JSON.stringify(result));
+    } catch (e) {
+      this.output.appendLine(`[router] agentOperationResult 回调失败: ${e && e.message}`);
+    }
+  }
+
+  /**
+   * export_agents：content 为 {agentIds:[...]}（空/无则导全部）。
+   * 对齐 Java：弹「保存文件」对话框，把导出 JSON 写到用户选的文件；无前端回调，
+   * 成功/失败用 hx.window.showInformationMessage/showErrorMessage 原生提示（best-effort）。
+   */
+  async _handleExportAgents(content) {
+    let agentIds = [];
+    try {
+      const data = JSON.parse(content);
+      if (data && Array.isArray(data.agentIds)) agentIds = data.agentIds;
+    } catch (e) { /* 解析失败导全部 */ }
+
+    try {
+      await this._ensureCwd();
+      const exportData = agentService.buildExportData(agentIds);
+      const defaultName = agentService.defaultExportFilename();
+
+      // HBuilderX 无原生 showSaveDialog；用 showFormDialog 让用户填「目录 + 文件名」。
+      if (!(this.hx.window && typeof this.hx.window.showFormDialog === 'function')) {
+        this._notifyError('当前 HBuilderX 版本不支持文件保存对话框');
+        return;
+      }
+
+      const dialogResult = await this.hx.window.showFormDialog({
+        title: '导出 Agent',
+        subtitle: `将导出 ${exportData.agentCount} 个 Agent 到 JSON 文件`,
+        width: 540,
+        height: 280,
+        submitButtonText: '导出',
+        cancelButtonText: '取消',
+        formItems: [
+          {
+            type: 'fileSelectInput',
+            name: 'targetDir',
+            mode: 'folder',
+            label: '保存目录',
+            placeholder: '请选择保存目录',
+            value: this.cwd || '',
+          },
+          {
+            type: 'input',
+            name: 'fileName',
+            label: '文件名',
+            placeholder: '文件名（.json）',
+            value: defaultName,
+          },
+        ],
+      });
+
+      const data = dialogResult && dialogResult.data;
+      if (!data) {
+        this.output.appendLine('[router] export_agents 已取消');
+        return;
+      }
+      const targetDir = (typeof data === 'string' ? data : (data.targetDir || data.path || '')) || '';
+      let fileName = (data && data.fileName) || defaultName;
+      if (!targetDir) {
+        this.output.appendLine('[router] export_agents 未选择目录，已取消');
+        return;
+      }
+      if (!/\.json$/i.test(fileName)) fileName += '.json';
+
+      const targetPath = path.join(targetDir, fileName);
+      fs.writeFileSync(targetPath, JSON.stringify(exportData, null, 2), 'utf-8');
+      this.output.appendLine(`[router] export_agents: 已导出 ${exportData.agentCount} 个 Agent -> ${targetPath}`);
+      this._notifyInfo(`已导出 ${exportData.agentCount} 个 Agent 到 ${fileName}`);
+    } catch (e) {
+      this.output.appendLine(`[router] export_agents 异常: ${e && e.message}`);
+      this._notifyError(`导出 Agent 失败: ${e && e.message ? e.message : String(e)}`);
+    }
+  }
+
+  /**
+   * import_agents_file：前端不带载荷。弹「选择 JSON 文件」对话框，解析为预览结构，
+   * 回 agentImportPreviewResult(JSON 字符串)。预览结构必须含 items 数组 + summary 对象
+   *（前端会校验，否则丢弃）。取消则不回调（无预览可弹）；解析失败用原生错误提示。
+   */
+  async _handleImportAgentsFile() {
+    try {
+      if (!(this.hx.window && typeof this.hx.window.showFormDialog === 'function')) {
+        this._notifyError('当前 HBuilderX 版本不支持文件选择对话框');
+        return;
+      }
+      await this._ensureCwd();
+
+      const dialogResult = await this.hx.window.showFormDialog({
+        title: '导入 Agent',
+        subtitle: '选择一个导出的 JSON 文件（claude-code-agents-export-v1）',
+        width: 540,
+        height: 220,
+        submitButtonText: '下一步',
+        cancelButtonText: '取消',
+        formItems: [
+          {
+            type: 'fileSelectInput',
+            name: 'filePath',
+            mode: 'file',
+            label: 'Agent 文件',
+            placeholder: '请选择 JSON 文件',
+            value: this.cwd || '',
+          },
+        ],
+      });
+
+      const data = dialogResult && dialogResult.data;
+      let filePath = data
+        ? (typeof data === 'string' ? data : (data.filePath || data.path || ''))
+        : '';
+      if (!filePath) {
+        this.output.appendLine('[router] import_agents_file 已取消或未选择文件');
+        return;
+      }
+
+      if (!fs.existsSync(filePath)) {
+        this._notifyError('文件不存在: ' + filePath);
+        return;
+      }
+      const stat = fs.statSync(filePath);
+      if (stat.size > 5 * 1024 * 1024) {
+        this._notifyError('文件过大（> 5MB），请减少条目数量');
+        return;
+      }
+
+      const fileContent = fs.readFileSync(filePath, 'utf-8');
+      const preview = agentService.buildImportPreview(fileContent);
+      this.output.appendLine(`[router] import_agents_file: total=${preview.summary.total} new=${preview.summary.newCount} update=${preview.summary.updateCount}`);
+      try {
+        this.bridge.callJs('agentImportPreviewResult', JSON.stringify(preview));
+      } catch (e) {
+        this.output.appendLine(`[router] agentImportPreviewResult 回调失败: ${e && e.message}`);
+      }
+    } catch (e) {
+      this.output.appendLine(`[router] import_agents_file 异常: ${e && e.message}`);
+      this._notifyError(`加载导入文件失败: ${e && e.message ? e.message : String(e)}`);
+    }
+  }
+
+  /**
+   * save_imported_agents：content 为 {agents:[...], strategy}。按策略批量导入，
+   * 回 agentImportResult(JSON 字符串)：{success, imported, updated, skipped, error?}。
+   * 前端收到后会 toast 并自行 loadAgents 刷新列表。出错也回 success:false。
+   */
+  _handleSaveImportedAgents(content) {
+    let result;
+    try {
+      const data = JSON.parse(content);
+      if (!data || !Array.isArray(data.agents)) {
+        throw new Error('Missing required fields: agents or strategy');
+      }
+      const strategy = data.strategy;
+      const r = agentService.batchImportAgents(data.agents, strategy);
+      result = { success: r.success, imported: r.imported, updated: r.updated, skipped: r.skipped };
+      this.output.appendLine(`[router] save_imported_agents: imported=${r.imported} updated=${r.updated} skipped=${r.skipped}`);
+    } catch (e) {
+      this.output.appendLine(`[router] save_imported_agents 异常: ${e && e.message}`);
+      result = { success: false, imported: 0, updated: 0, skipped: 0, error: e && e.message ? e.message : String(e) };
+    }
+    try {
+      this.bridge.callJs('agentImportResult', JSON.stringify(result));
+    } catch (e) {
+      this.output.appendLine(`[router] agentImportResult 回调失败: ${e && e.message}`);
+    }
+  }
+
+  /** best-effort 原生信息提示（API 不存在则只记日志）。 */
+  _notifyInfo(msg) {
+    try {
+      if (this.hx.window && typeof this.hx.window.showInformationMessage === 'function') {
+        this.hx.window.showInformationMessage(msg);
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  /** best-effort 原生错误提示（API 不存在则只记日志）。 */
+  _notifyError(msg) {
+    this.output.appendLine(`[router] ${msg}`);
+    try {
+      if (this.hx.window && typeof this.hx.window.showErrorMessage === 'function') {
+        this.hx.window.showErrorMessage(msg);
+      }
+    } catch (e) { /* ignore */ }
   }
 
   // ===================== 主题同步 =====================
