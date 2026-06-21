@@ -13,6 +13,8 @@
   "main": "./extension",
   "activationEvents": [
     "onCommand:extension.ccgui.open",
+    "onCommand:extension.ccgui.sendSelection",
+    "onCommand:extension.ccgui.addFile",
     "onView:ccgui.chatView"
   ],
   "contributes": {
@@ -20,8 +22,45 @@
       {
         "command": "extension.ccgui.open",
         "title": "打开 CC GUI 助手"
+      },
+      {
+        "command": "extension.ccgui.sendSelection",
+        "title": "发送选中代码到 CC GUI"
+      },
+      {
+        "command": "extension.ccgui.addFile",
+        "title": "添加文件到 CC GUI"
       }
     ],
+    "keybindings": [
+      {
+        "command": "extension.ccgui.open",
+        "key": "ctrl+alt+c"
+      },
+      {
+        "command": "extension.ccgui.sendSelection",
+        "key": "ctrl+alt+a",
+        "when": "editorTextFocus"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "extension.ccgui.sendSelection",
+          "group": "z_commands",
+          "when": "editorTextFocus",
+          "title": "发送选中代码到 CC GUI"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "extension.ccgui.addFile",
+          "group": "z_commands",
+          "when": "explorerResourceCount == 1 && !explorerResourceIsFolder",
+          "title": "添加文件到 CC GUI"
+        }
+      ]
+    },
     "viewsContainers": {
       "rightside": [
         {

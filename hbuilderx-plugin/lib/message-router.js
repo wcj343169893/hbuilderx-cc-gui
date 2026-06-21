@@ -49,6 +49,33 @@ class MessageRouter {
     this._themeDisposable = null;
   }
 
+  /**
+   * 把选中代码片段以「文件标签」形式注入前端输入框并聚焦。
+   * snippet 形如 `@<绝对路径>#L<起>-<止>` / `@<绝对路径>#L<行>` / `@<绝对路径>`。
+   * addCodeSnippet 是「追加」语义，由调用方保证只调用一次。
+   */
+  injectCodeSnippet(snippet) {
+    try {
+      this.bridge.callJs('addCodeSnippet', snippet);
+      this.bridge.callJs('focusChatInput');
+    } catch (e) {
+      this.output.appendLine(`[router] injectCodeSnippet 失败: ${e && e.message}`);
+    }
+  }
+
+  /**
+   * 把文件以 `@file` 引用形式注入前端输入框并聚焦。
+   * pathOrArray 可为单个绝对路径字符串，或字符串数组。
+   */
+  injectFiles(pathOrArray) {
+    try {
+      this.bridge.callJs('handleFilePathFromJava', pathOrArray);
+      this.bridge.callJs('focusChatInput');
+    } catch (e) {
+      this.output.appendLine(`[router] injectFiles 失败: ${e && e.message}`);
+    }
+  }
+
   /** 当前激活的 provider 配置（无则 null）。 */
   _activeProvider() {
     return this.providers.find((p) => p.id === this.activeProviderId) || null;
