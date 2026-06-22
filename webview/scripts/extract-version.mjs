@@ -10,32 +10,47 @@ const __dirname = path.dirname(__filename);
 
 // Get the project root directory (the parent of webview)
 const projectRoot = path.resolve(__dirname, '../..');
+
+// Version source of truth = hbuilderx-plugin/package.json (HBuilderX 移植版的发布版本)。
+// 这样应用内欢迎页与版本更新弹窗显示的版本与插件 package.json 一致；
+// 仅当该文件缺失/无 version 时，回退到根 build.gradle（上游 IDEA 构建）。
+const pluginPkgPath = path.join(projectRoot, 'hbuilderx-plugin', 'package.json');
 const buildGradlePath = path.join(projectRoot, 'build.gradle');
 
-// Read the build.gradle file
-const buildGradleContent = fs.readFileSync(buildGradlePath, 'utf8');
+let version = null;
+let source = '';
 
-// Extract the version number
-// Look for a line like: version = '0.1.0-beta3'
-let versionMatch = buildGradleContent.match(/^version\s*=\s*'(.+)'$/m);
-if (!versionMatch) {
-  // If the regex above fails, try a fallback approach
-  const lines = buildGradleContent.split('\n');
-  const versionLine = lines.find(line => line.trim().startsWith('version ='));
-  if (versionLine) {
-    const match = versionLine.match(/version\s*=\s*'(.+)'/);
-    if (match) {
-      versionMatch = match;
+if (fs.existsSync(pluginPkgPath)) {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(pluginPkgPath, 'utf8'));
+    if (pkg && typeof pkg.version === 'string' && pkg.version.trim()) {
+      version = pkg.version.trim();
+      source = 'hbuilderx-plugin/package.json';
     }
+  } catch (e) {
+    console.warn(`Warning: failed to parse ${pluginPkgPath}: ${e.message}`);
   }
 }
-if (!versionMatch) {
-  console.error('Error: Could not find version in build.gradle');
+
+if (!version && fs.existsSync(buildGradlePath)) {
+  const buildGradleContent = fs.readFileSync(buildGradlePath, 'utf8');
+  let versionMatch = buildGradleContent.match(/^version\s*=\s*'(.+)'$/m);
+  if (!versionMatch) {
+    const versionLine = buildGradleContent.split('\n').find(line => line.trim().startsWith('version ='));
+    if (versionLine) versionMatch = versionLine.match(/version\s*=\s*'(.+)'/);
+  }
+  if (versionMatch) {
+    version = versionMatch[1];
+    source = 'build.gradle (fallback)';
+  }
+}
+
+if (!version) {
+  console.error('Error: Could not determine version from hbuilderx-plugin/package.json or build.gradle');
   process.exit(1);
 }
 
-const version = versionMatch[1];
-console.log(`Found version: ${version}`);
+console.log(`Found version: ${version} (source: ${source})`);
 
 // Create the version file for the webview
 const versionDir = path.join(__dirname, '../src/version');
