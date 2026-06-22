@@ -3,7 +3,7 @@
   "name": "cqsort-cc-gui",
   "displayName": "CC GUI（Claude or Codex）",
   "description": "Claude Code / OpenAI Codex 可视化助手（HBuilderX 版）",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "重庆柔然科技有限公司",
   "repository": "https://github.com/wcj343169893/hbuilderx-cc-gui.git",
   "homepage": "https://github.com/wcj343169893/hbuilderx-cc-gui",
@@ -122,6 +122,9 @@
     }
   },
   "dependencies": {},
+  "scripts": {
+    "bundle": "node scripts/bundle.js"
+  },
   "dcloudext": {
     "type": "hbuilderx",
     "sale": {

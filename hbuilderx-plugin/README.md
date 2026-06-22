@@ -68,6 +68,35 @@ webview(React 单文件 HTML) ⟷ extension.js(HBuilderX 插件进程, 内置 No
 > 改动 `lib/*.js` 后**必须完全关闭插件调试子窗体再重新「运行插件」**——PluginHost 用 `require` 缓存
 > 模块，仅重开视图不会重载新代码。
 
+## 发行 / 打包（其他电脑安装必读）
+
+插件被安装到 `HBuilderX/plugins/<id>/` 后是**独立目录**，没有仓库其余部分。因此发行前该目录
+**必须自包含**这两样运行时产物，否则在别的电脑启动会报：
+
+- `读取 HTML 失败: ENOENT ... \html\claude-chat.html` —— 缺 webview 构建产物
+- `ai-bridge 启动失败: 未找到 ai-bridge 目录（daemon.js）` —— 缺桥接（它原本在仓库根，不在插件目录内）
+
+发行步骤（缺一不可）：
+
+```bash
+# 1) 构建前端（生成 hbuilderx-plugin/html/claude-chat.html）
+cd webview && npm install && npm run build
+# 2) 安装 ai-bridge 依赖（sql.js）
+cd ../ai-bridge && npm install
+# 3) 把 ai-bridge 内置进插件目录（生成 hbuilderx-plugin/ai-bridge/，含 sql.js）
+cd ../hbuilderx-plugin && npm run bundle
+```
+
+完成后 `hbuilderx-plugin/` 即自包含，可在 HBuilderX 里「发行 → 上传插件市场」，或整目录拷到
+`HBuilderX/plugins/<id>/`。`lib/ai-bridge-client.js` 的 `resolveAiBridgeDir` 会优先用内置的
+`hbuilderx-plugin/ai-bridge/`，开发态才回退仓库根的 `../ai-bridge`。
+
+> **关于 .gitignore 与上传**：插件市场上传会按**插件目录内**的 `.gitignore` 过滤文件，所以
+> `hbuilderx-plugin/` 内**不放任何 `.gitignore`**（`bundle.js` 复制 ai-bridge 时会剥掉所有 `.gitignore`）。
+> `html/claude-chat.html` 与 `hbuilderx-plugin/ai-bridge/` 仍是生成产物、勿提交，但忽略规则只写在
+> **主仓库根** `.gitignore`（上传不读根 ignore，故能正常打进包；git 也不会跟踪它们）。发行前用上面三条命令重新生成。
+> **Claude/Codex SDK 不在包内**，由用户首次在「设置 → 依赖」联网安装到 `~/.codemoss`（见下节）。
+
 ## 依赖 / SDK 安装（重要）
 
 本插件**不打包** Claude/Codex 的 Node SDK（claude-sdk 实测约 251MB，且含平台相关二进制，

@@ -55,6 +55,12 @@ webview/dist/
 
 src/main/resources/html/*
 
+# HBuilderX 插件发行前生成的产物，勿提交；但 .gitignore 规则只放在**主仓库根**这里，
+# 不要放进 hbuilderx-plugin/ 内部——插件市场上传会按插件目录内的 .gitignore 过滤文件，
+# 放在根 .gitignore 则不影响上传（上传不读根 ignore），二者兼顾。
+hbuilderx-plugin/ai-bridge/
+hbuilderx-plugin/html/claude-chat.html
+
 .specify
 .claude
 specs
