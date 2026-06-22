@@ -22,6 +22,9 @@ export function useProjectName(): { projectName: string; selectProject: () => vo
         try { prev(json); } catch { /* ignore chained handler error */ }
       }
     };
+    // 宿主 bootstrap 的 onProjectChanged 推送可能早于本回调注册，被桥接 shim 静默丢弃，
+    // 导致顶部一直拿不到项目名。故挂载（已注册回调）后主动拉取一次，宿主收到即回推。
+    sendBridgeEvent('request_project');
     return () => { window.onProjectChanged = prev; };
   }, []);
 

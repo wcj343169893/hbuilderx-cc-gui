@@ -409,6 +409,12 @@ class MessageRouter {
       case 'select_project':
         this._handleSelectProject(content);
         break;
+      case 'request_project':
+        this._handleRequestProject();
+        break;
+      case 'get_project_info':
+        this._handleGetProjectInfo();
+        break;
       case 'load_session':
         this._handleLoadSession(content);
         break;
@@ -733,6 +739,30 @@ class MessageRouter {
     this.output.appendLine(`[router] 切换项目 -> ${this.projectName} (${this.cwd})`);
     this._handleNewSession(); // 切到不同项目：历史按项目隔离，开新会话
     this._emitProject();
+  }
+
+  /**
+   * 前端挂载后主动拉取当前项目（事件 `request_project`）。
+   * 规避竞态：bootstrap 的 `onProjectChanged` 推送可能早于前端注册回调而被桥接 shim 静默丢弃，
+   * 导致顶部一直显示不出项目名。前端注册回调后再请求，这里回推即可命中。
+   */
+  async _handleRequestProject() {
+    if (!this.cwd) {
+      this.cwd = await this._resolveCwd(); // 顺带同步 this.projectName
+    }
+    this._emitProject();
+  }
+
+  /**
+   * 响应前端 `get_project_info`（项目级提示词等使用）：回推 {name,path,available}。
+   * 此前未实现，前端会一直停在加载态、日志刷 “暂未处理: get_project_info”。
+   */
+  async _handleGetProjectInfo() {
+    if (!this.cwd) {
+      this.cwd = await this._resolveCwd();
+    }
+    const payload = { name: this.projectName || '', path: this.cwd || '', available: !!this.cwd };
+    this.bridge.callJs('updateProjectInfo', JSON.stringify(payload));
   }
 
   /**
