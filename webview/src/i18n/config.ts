@@ -11,10 +11,10 @@ import ru from './locales/ru.json';
 import ko from './locales/ko.json';
 import ptBR from './locales/pt-BR.json';
 
-// Retrieve the saved language from localStorage; default to English if not set
+// Retrieve the saved language from localStorage; default to Simplified Chinese if not set
 const getInitialLanguage = (): string => {
   const savedLanguage = localStorage.getItem('language');
-  return savedLanguage || 'en'; // Default to English
+  return savedLanguage || 'zh'; // Default to Simplified Chinese
 };
 
 i18n

@@ -507,7 +507,7 @@
             "proxyConfigCodeLabel": "~/.claude/settings.json",
             "proxyConfigCode": "{\n  \"env\": {\n    \"HTTP_PROXY\": \"http://127.0.0.1:7897\",\n    \"HTTPS_PROXY\": \"http://127.0.0.1:7897\"\n  }\n}",
             "issuePrefix": "それでも解決しない場合は、GitHub に問題を報告してください：",
-            "issueUrl": "https://github.com/zhukunpenglinyutong/idea-claude-code-gui/issues"
+            "issueUrl": "https://github.com/wcj343169893/hbuilderx-cc-gui/issues"
           },
           "codex": {
             "title": "Codex サブスクリプションアカウントのセットアップ",
@@ -521,7 +521,7 @@
             "proxyConfigCodeLabel": "",
             "proxyConfigCode": "",
             "issuePrefix": "それでも解決しない場合は、GitHub に問題を報告してください：",
-            "issueUrl": "https://github.com/zhukunpenglinyutong/idea-claude-code-gui/issues"
+            "issueUrl": "https://github.com/wcj343169893/hbuilderx-cc-gui/issues"
           }
         }
       },

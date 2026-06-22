@@ -533,7 +533,7 @@
             "proxyConfigCodeLabel": "~/.claude/settings.json",
             "proxyConfigCode": "{\n  \"env\": {\n    \"HTTP_PROXY\": \"http://127.0.0.1:7897\",\n    \"HTTPS_PROXY\": \"http://127.0.0.1:7897\"\n  }\n}",
             "issuePrefix": "그래도 작동하지 않으면 GitHub에 이슈를 보고해주세요: ",
-            "issueUrl": "https://github.com/zhukunpenglinyutong/idea-claude-code-gui/issues"
+            "issueUrl": "https://github.com/wcj343169893/hbuilderx-cc-gui/issues"
           },
           "codex": {
             "title": "Codex 구독 계정 설정",
@@ -547,7 +547,7 @@
             "proxyConfigCodeLabel": "",
             "proxyConfigCode": "",
             "issuePrefix": "그래도 작동하지 않으면 GitHub에 이슈를 보고해주세요: ",
-            "issueUrl": "https://github.com/zhukunpenglinyutong/idea-claude-code-gui/issues"
+            "issueUrl": "https://github.com/wcj343169893/hbuilderx-cc-gui/issues"
           }
         }
       },

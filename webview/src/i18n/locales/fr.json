@@ -502,7 +502,7 @@
             "proxyConfigCodeLabel": "~/.claude/settings.json",
             "proxyConfigCode": "{\n  \"env\": {\n    \"HTTP_PROXY\": \"http://127.0.0.1:7897\",\n    \"HTTPS_PROXY\": \"http://127.0.0.1:7897\"\n  }\n}",
             "issuePrefix": "Si cela ne fonctionne toujours pas, signalez un problème sur GitHub : ",
-            "issueUrl": "https://github.com/zhukunpenglinyutong/idea-claude-code-gui/issues"
+            "issueUrl": "https://github.com/wcj343169893/hbuilderx-cc-gui/issues"
           },
           "codex": {
             "title": "Configuration du compte d'abonnement Codex",
@@ -516,7 +516,7 @@
             "proxyConfigCodeLabel": "",
             "proxyConfigCode": "",
             "issuePrefix": "Si cela ne fonctionne toujours pas, signalez un problème sur GitHub : ",
-            "issueUrl": "https://github.com/zhukunpenglinyutong/idea-claude-code-gui/issues"
+            "issueUrl": "https://github.com/wcj343169893/hbuilderx-cc-gui/issues"
           }
         }
       },

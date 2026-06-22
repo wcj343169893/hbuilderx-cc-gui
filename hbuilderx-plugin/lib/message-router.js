@@ -14,6 +14,7 @@ const skillsService = require('./skills-service');
 const historyService = require('./history-service');
 const agentService = require('./agent-service');
 const mcpService = require('./mcp-service');
+const dependencyService = require('./dependency-service');
 
 /**
  * 事件路由：把 webview 出站事件映射到 ai-bridge 调用，并把流式结果回灌前端。
@@ -156,27 +157,89 @@ class MessageRouter {
 
   /**
    * 计算 SDK 安装状态（文件系统检查 ~/.codemoss/dependencies）。
-   * 形态对齐前端 updateDependencyStatus 期望：{ 'claude-sdk': {id,name,status,installedVersion?,hasUpdate}, 'codex-sdk': {...} }
+   * 形态对齐前端 updateDependencyStatus 期望：{ 'claude-sdk': {id,name,status,installedVersion?,installPath?,hasUpdate}, 'codex-sdk': {...} }
    */
   _dependencyStatusPayload() {
-    const base = path.join(os.homedir(), '.codemoss', 'dependencies');
-    const check = (sdkId, pkg, name) => {
-      const dir = path.join(base, sdkId, 'node_modules', ...pkg.split('/'));
-      const entry = { id: sdkId, name, status: 'not_installed', hasUpdate: false };
-      try {
-        if (fs.existsSync(dir)) {
-          entry.status = 'installed';
-          try {
-            entry.installedVersion = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf-8')).version;
-          } catch (e) { /* 版本读不到不影响 installed 判定 */ }
-        }
-      } catch (e) { /* ignore */ }
-      return entry;
-    };
-    return {
-      'claude-sdk': check('claude-sdk', '@anthropic-ai/claude-agent-sdk', 'Claude Code SDK'),
-      'codex-sdk': check('codex-sdk', '@openai/codex-sdk', 'Codex SDK'),
-    };
+    return dependencyService.getStatus();
+  }
+
+  /**
+   * Node 环境状态，形态对齐前端 nodeEnvironmentStatus 期望 `{ available }`。
+   * （前端只读 status.available；version/path/belowMin 仅用于调试展示。）
+   */
+  _nodeEnvPayload() {
+    const available = !!(this.nodeInfo && this.nodeInfo.path);
+    const payload = { available };
+    if (this.nodeInfo) {
+      payload.version = this.nodeInfo.major;
+      payload.path = this.nodeInfo.path;
+      if (this.nodeInfo.belowMin) payload.belowMin = true;
+    } else {
+      payload.error = 'Node.js not found';
+    }
+    return payload;
+  }
+
+  /**
+   * 安装/升级 SDK。流式回灌 dependencyInstallProgress，结束回 dependencyInstallResult（均为 JSON 字符串）。
+   * content 形如 {"id":"claude-sdk","version":"0.2.88"}（version 可选）。
+   */
+  async _handleInstallDependency(content) {
+    let id = '';
+    let version;
+    try { const o = JSON.parse(content || '{}') || {}; id = o.id || ''; version = o.version; } catch (e) { /* ignore */ }
+
+    const nodePath = this.nodeInfo && this.nodeInfo.path;
+    if (!nodePath) {
+      this.bridge.callJs('dependencyInstallResult', JSON.stringify({ success: false, sdkId: id, error: 'node_not_configured' }));
+      return;
+    }
+    if (this._depBusy) {
+      this.bridge.callJs('dependencyInstallResult', JSON.stringify({ success: false, sdkId: id, error: '已有依赖操作进行中，请稍候' }));
+      return;
+    }
+    this._depBusy = true;
+    try {
+      const res = await dependencyService.install({
+        sdkId: id,
+        version,
+        nodePath,
+        onLog: (line) => this.bridge.callJs('dependencyInstallProgress', JSON.stringify({ sdkId: id, log: line })),
+      });
+      this.bridge.callJs('dependencyInstallResult', JSON.stringify(res));
+      // 安装成功后刷新状态（daemon 的 sdk-loader 每次发送都会 existsSync 检查，无需重启即可加载新装的 SDK）
+      if (res && res.success) {
+        this.bridge.callJs('updateDependencyStatus', JSON.stringify(this._dependencyStatusPayload()));
+      }
+    } catch (e) {
+      this.bridge.callJs('dependencyInstallResult', JSON.stringify({ success: false, sdkId: id, error: e && e.message }));
+    } finally {
+      this._depBusy = false;
+    }
+  }
+
+  /** 检查更新，回 dependencyUpdateAvailable（JSON 字符串）。content 可选 {"id":sdkId}。 */
+  async _handleCheckDependencyUpdates(content) {
+    let id;
+    try { id = (JSON.parse(content || '{}') || {}).id; } catch (e) { /* ignore */ }
+    try {
+      const res = await dependencyService.checkUpdates({ sdkId: id, nodePath: this.nodeInfo && this.nodeInfo.path });
+      this.bridge.callJs('dependencyUpdateAvailable', JSON.stringify(res));
+    } catch (e) {
+      this.output.appendLine(`[router] check_dependency_updates 失败: ${e && e.message}`);
+    }
+  }
+
+  /** 拉取可选版本，回 dependencyVersionsLoaded（JSON 字符串）。content 可选 {"id":sdkId}。 */
+  async _handleGetDependencyVersions(content) {
+    let id;
+    try { id = (JSON.parse(content || '{}') || {}).id; } catch (e) { /* ignore */ }
+    try {
+      const res = await dependencyService.getVersions({ sdkId: id, nodePath: this.nodeInfo && this.nodeInfo.path });
+      this.bridge.callJs('dependencyVersionsLoaded', JSON.stringify(res));
+    } catch (e) {
+      this.output.appendLine(`[router] get_dependency_versions 失败: ${e && e.message}`);
+    }
   }
 
   /** 内置 Claude Code 斜杠命令（即时填充 `/` 菜单；真实/技能命令在首次发送的 system 消息里刷新）。 */
@@ -236,7 +299,7 @@ class MessageRouter {
     this.nodeInfo = detectNode(config, { execPath: process.execPath });
     if (!this.nodeInfo) {
       this.output.appendLine('[router] 未找到可用 Node.js，无法启动 ai-bridge');
-      this.bridge.callJs('nodeEnvironmentStatus', JSON.stringify({ installed: false, error: 'Node.js not found' }));
+      this.bridge.callJs('nodeEnvironmentStatus', JSON.stringify(this._nodeEnvPayload()));
       return;
     }
     this.output.appendLine(`[router] 使用 Node: ${this.nodeInfo.path} (v${this.nodeInfo.major}, 来源=${this.nodeInfo.source})`);
@@ -245,9 +308,10 @@ class MessageRouter {
       const warn = `当前 Node v${this.nodeInfo.major}(${this.nodeInfo.source}) 低于 Claude/Codex SDK 要求的 v18，可能无法正常工作。`
         + `请在 设置 → 插件配置 → CC GUI → nodePath 指定一个 ≥18 的 Node，或安装系统 Node 18+。`;
       this.output.appendLine(`[router] 警告: ${warn}`);
-      this.bridge.callJs('nodeEnvironmentStatus', JSON.stringify({ installed: true, version: this.nodeInfo.major, path: this.nodeInfo.path, belowMin: true, error: warn }));
+      // 仍 available:true —— npm install 本身在 Node 16 也能跑；SDK 运行期的版本告警已写入 OutputChannel
+      this.bridge.callJs('nodeEnvironmentStatus', JSON.stringify(this._nodeEnvPayload()));
     } else {
-      this.bridge.callJs('nodeEnvironmentStatus', JSON.stringify({ installed: true, version: this.nodeInfo.major, path: this.nodeInfo.path }));
+      this.bridge.callJs('nodeEnvironmentStatus', JSON.stringify(this._nodeEnvPayload()));
     }
 
     // 权限桥接 env 必须在 spawn 前注入；provider 的 key/baseURL 走 ~/.codemoss/config.json（setupApiKey 每次发送读取）
@@ -325,6 +389,29 @@ class MessageRouter {
         break;
       case 'get_dependency_status':
         this.bridge.callJs('updateDependencyStatus', JSON.stringify(this._dependencyStatusPayload()));
+        break;
+      // ===== SDK 依赖联网安装（移植 IDEA DependencyManager；本插件不打包 SDK）=====
+      case 'install_dependency':
+      case 'update_dependency':
+        this._handleInstallDependency(content);
+        break;
+      case 'uninstall_dependency': {
+        let id = '';
+        try { id = (JSON.parse(content || '{}') || {}).id || ''; } catch (e) { /* ignore */ }
+        const res = dependencyService.uninstall(id);
+        this.bridge.callJs('dependencyUninstallResult', JSON.stringify(res));
+        // 卸载后刷新状态
+        this.bridge.callJs('updateDependencyStatus', JSON.stringify(this._dependencyStatusPayload()));
+        break;
+      }
+      case 'check_dependency_updates':
+        this._handleCheckDependencyUpdates(content);
+        break;
+      case 'get_dependency_versions':
+        this._handleGetDependencyVersions(content);
+        break;
+      case 'check_node_environment':
+        this.bridge.callJs('nodeEnvironmentStatus', JSON.stringify(this._nodeEnvPayload()));
         break;
       case 'get_prompts': {
         // 自定义 prompt 列表（/ 自动补全）。阶段 3 接入真实存储，先回空避免前端等待。

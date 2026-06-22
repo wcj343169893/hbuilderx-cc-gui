@@ -1,295 +1,148 @@
 <div align="center">
 
-# CC GUI（Claude or Codex）
+# CC GUI（Claude or Codex）· HBuilderX 插件
 
-> 原名：Claude Code GUI
+> 在 HBuilderX 中可视化使用 **Claude Code** 与 **OpenAI Codex** 的 AI 编程助手
 
-<img width="120" alt="Image" src="./docs/images/idea-claude-code-gui-logo.png" />
+<img width="120" alt="CC GUI Logo" src="./docs/images/idea-claude-code-gui-logo.png" />
 
-**简体中文** · [English](./README.md)
+**简体中文** · [README（含 English Summary）](./README.md)
 
-<a href="https://trendshift.io/repositories/24968" target="_blank"><img src="https://trendshift.io/api/badge/repositories/24968" alt="zhukunpenglinyutong%2Fjetbrains-cc-gui | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
-
-![][github-contributors-shield] ![][github-forks-shield] ![][github-stars-shield] ![][github-issues-shield] ![][github-mit]
+仓库地址：<https://github.com/wcj343169893/hbuilderx-cc-gui>
 
 </div>
 
-> 为规避Claude商标风险，本项目名称修改为CC GUI（原名：Claude Code GUI）；并更换LOGO减少中国元素；对于安全方面，后续每个小版本发版前都进行 /security-review 审查，每隔10个小版本进行一次整体的 claude-code-security 审查
+---
 
-一个功能强大的 IntelliJ IDEA 插件，为开发者提供 **Claude Code** 和 **OpenAI Codex** 双 AI 工具的可视化操作界面，让 AI 辅助编程变得更加高效和直观。
+`hbuilderx-cc-gui` 是一款 **HBuilderX 插件**，在 IDE 右侧面板中提供 **Claude Code** 和 **OpenAI Codex** 双 AI 引擎的可视化操作界面，让 AI 辅助编程在 HBuilderX 中变得高效而直观。
 
-<img width="850" alt="Image" src="/docs/img/banner.png" />
+本插件由 IDEA 版 [CC GUI（Claude or Codex）](https://github.com/zhukunpenglinyutong/jetbrains-cc-gui) 移植而来：复用同一份 React 前端（webview）与 Node 版 `ai-bridge` 桥接层，用 Node.js 重写了原 Java/JCEF 胶水层以适配 HBuilderX。
 
 ---
 
-## 插件下载
+## 推荐 / 赞助商
 
-[CC GUI（Claude or Codex） 下载](https://plugins.jetbrains.com/plugin/29342-cc-gui-claude-or-codex-)
+<div align="center">
 
----
+<img src="https://mp-e95828c6-d51a-4218-b323-5a50121cc0eb.cdn.bspapp.com/cloudstorage/20260621222049_93_62.jpg" alt="宴席记情本小程序" width="300" />
 
-## 核心特性
+**宴席记情本 · 小程序**
 
-### 双 AI 引擎支持
-- **Claude Code** - Anthropic 官方 AI 编程助手，支持 Opus 4.5 等多模型
-- **OpenAI Codex** - OpenAI 强大的代码生成引擎
-
-### 智能对话功能
-- 上下文感知的 AI 编程助手
-- 支持 @文件引用，精准指定代码上下文
-- 图片发送支持，可视化描述需求
-- 对话回退功能，灵活调整对话历史
-- 强化提示词，优化 AI 理解能力
-
-### Agent 智能体
-- 内置 Agent 系统，自动化执行复杂任务
-- Skills 斜杠命令系统（/init, /review 等）
-- MCP 服务器支持，扩展 AI 能力边界
-
-### 开发者体验
-- 完善的权限管理和安全控制
-- 代码 DIFF 对比功能
-- 文件跳转和代码导航
-- 深色/浅色主题切换
-- 字体缩放和 IDE 字体同步
-- 国际化支持（中/英文自动切换）
-
-### 会话管理
-- 历史会话记录和搜索
-- 会话收藏功能
-- 消息导出支持
-- 供应商管理（兼容 cc-switch）
-- 使用统计分析
+</div>
 
 ---
 
-## 项目状态
+## 功能特性
 
-项目处于活跃开发阶段，代码持续更新中。版本历史和迭代进度请阅读 [CHANGELOG.md](CHANGELOG.md)
+### 双 AI 引擎
+- **Claude Code** —— Anthropic 官方 AI 编程助手，支持 Opus 等多种模型
+- **OpenAI Codex** —— OpenAI 强大的代码生成引擎
+
+### 智能对话
+- 流式输出（streaming chat），实时查看 AI 回复
+- 上下文感知的编程助手
+- `@文件` 引用，精准指定代码上下文
+- 会话管理：新建 / 中断 / 按会话 ID 续聊
+
+### 权限与安全
+- 完善的权限管理，支持 Ask / Plan 审批流程
+- 权限模式可配置：`askAlways` / `acceptEdits` / `bypassPermissions` / `plan`
+
+### 会话与历史
+- 历史会话浏览、搜索与收藏
+- 历史消息重放
+
+### 扩展能力
+- **Provider 管理**：支持多家 API 供应商（含 DeepSeek 等）切换与管理
+- **Slash 斜杠命令**
+- **Skills 技能系统**
+- **MCP 服务器支持**，扩展 AI 能力边界
+- **Agent 智能体系统**
+
+### IDE 集成体验
+- 文件跳转与代码导航
+- 跟随 HBuilderX 主题（深色 / 浅色）自动同步
+- 状态栏图标入口快速唤起
+- 快捷键：`Ctrl+Alt+C` 打开 CC GUI 助手，`Ctrl+Alt+A` 发送选中代码
+- 右键菜单入口：编辑器内「发送选中代码到 CC GUI」、资源管理器内「添加文件到 CC GUI」
 
 ---
 
-### 贡献代码
+## 环境要求
 
-贡献代码前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)
+- **HBuilderX**（建议 3.0+），并使用其内置的 **Node.js ≥ 18**
+  - 本插件优先使用 HBuilderX 内置 Node（实测为 v18.20.0，满足 Claude/Codex SDK 的 `engines >=18` 且自带全局 `fetch`）。
+  - Node 选择优先级：`ccgui.nodePath`（显式配置）→ HBuilderX 内置 Node（≥18 时采用）→ 系统 Node。仅当内置 Node < 18 的旧版 HBuilderX 才回退系统 Node。
+- 已配置可用的 Claude / Codex 凭据（例如本机已登录 `claude`，或设置 `ANTHROPIC_API_KEY` 等环境变量），或在插件内的 Provider 管理中配置 API 供应商。
 
 ---
 
+## 安装与使用
 
-## 本地开发调试
+> 当前为开发 / 自构建方式运行，需先构建前端与安装桥接依赖。
 
-### 1.安装前端依赖
+### 1. 构建前端（生成 `hbuilderx-plugin/html/claude-chat.html`）
 
 ```bash
 cd webview
 npm install
+npm run build
 ```
 
-### 2.安装ai-bridge依赖
+构建脚本会自动把单文件产物复制到 `hbuilderx-plugin/html/`。
+
+### 2. 安装 ai-bridge 依赖（Claude / Codex SDK 在此）
 
 ```bash
 cd ai-bridge
 npm install
 ```
 
-### 3.调试插件
+### 3. 在 HBuilderX 中运行
 
-在 IDEA 中运行：
-```bash
-./gradlew clean runIde
+1. 用 HBuilderX 打开插件目录 `hbuilderx-plugin/`。
+2. 菜单 **运行 → 运行插件**，启动调试子窗体。
+3. 在子窗体中通过命令 **「打开 CC GUI 助手」** 或快捷键 **`Ctrl+Alt+C`** 打开右侧 CC GUI 面板。
+4. 在面板中选择 AI 引擎与模型，即可开始对话。
+
+更详细的开发与架构说明见 [hbuilderx-plugin/README.md](./hbuilderx-plugin/README.md)。
+
+---
+
+## 架构简述
+
+```
+webview（React 单文件 HTML）
+        ⟷ extension.js（HBuilderX 插件进程）
+        ⟷ ai-bridge（用户系统 Node 子进程）
+        ⟷ Claude / Codex CLI / SDK
 ```
 
-### 4.构建插件
-
-```sh
-./gradlew clean buildPlugin
-
-# 生成的插件包会在 build/distributions/ 目录下（包体大约40MB）
-```
+- **前端**：复用 IDEA 版同一份 React webview，构建为单文件 HTML 加载到 HBuilderX 的 WebView 中。
+- **桥接**：前端与宿主之间通过 `hbuilderx.postMessage` / `webview.postMessage` 双向通信，桥接 shim 注入到 HTML，前端源码零改动。
+- **ai-bridge**：以用户系统 Node（或满足版本要求的 HBuilderX 内置 Node）作为子进程运行，承载 Claude / Codex SDK，使用 NDJSON 协议与宿主通信。
+- **状态持久化**：由于 HBuilderX 不支持 VSCode 的 `context.globalState`，model / mode / provider 等选择持久化到 `${hx.env.appData}/extensions/ccgui/pref.json`，重启后自动恢复；输入历史由 webview 的 localStorage 持久化。
 
 ---
 
-## License
+## 配置 / Provider 说明
 
-MIT
+插件设置项（HBuilderX 插件配置）：
 
----
+| 配置项 | 说明 |
+| --- | --- |
+| `ccgui.nodePath` | Node.js 可执行文件路径，留空则自动探测 |
+| `ccgui.claudeCliPath` | 自定义 Claude CLI 路径，留空则使用 PATH 中的 `claude` |
+| `ccgui.permissionMode` | 权限模式：`askAlways` / `acceptEdits` / `bypassPermissions` / `plan` |
 
-## 贡献者列表
-
-感谢所有帮助 IDEA-Claude-Code-GUI 变得更好的贡献者！
-
-<table>
-  <tr>
-    <td align="center">
-      <a href="https://github.com/zhukunpenglinyutong">
-        <img src="https://avatars.githubusercontent.com/u/31264015?size=100" width="100" height="100" alt="zhukunpenglinyutong" style="border-radius: 50%; border: 3px solid #ff6b35; box-shadow: 0 0 15px rgba(255, 107, 53, 0.6);" />
-      </a>
-      <div>⭐️⭐️⭐️</div>
-    </td>
-    <td align="center">
-      <a href="https://github.com/M1sury">
-        <img src="https://avatars.githubusercontent.com/u/64764195?size=100" width="100" height="100" alt="M1sury" style="border-radius: 50%;" />
-      </a>
-    </td>
-    <td align="center">
-      <a href="https://github.com/gadfly3173">
-        <img src="https://avatars.githubusercontent.com/u/28685179?size=100" width="100" height="100" alt="gadfly3173" style="border-radius: 50%; border: 3px solid #ff6b35; box-shadow: 0 0 15px rgba(255, 107, 53, 0.6);" />
-      </a>
-      <div">🔥🔥🔥</div>
-    </td>
-    <td align="center">
-      <a href="https://github.com/song782360037">
-        <img src="https://avatars.githubusercontent.com/u/66980578?size=100" width="100" height="100" alt="song782360037" style="border-radius: 50%;" />
-      </a>
-      <div">🔥</div>
-    </td>
-    <td align="center">
-      <a href="https://github.com/hpstream">
-        <img src="https://avatars.githubusercontent.com/u/18394192?size=100" width="100" height="100" alt="hpstream" style="border-radius: 50%;" />
-      </a>
-      <div>🔥🔥</div>
-    </td>
-    <td align="center">
-      <a href="https://github.com/imblowsnow">
-        <img src="https://avatars.githubusercontent.com/u/74449531?size=100" width="100" height="100" alt="imblowsnow" style="border-radius: 50%;" />
-      </a>
-    </td>
-    <td align="center">
-      <a href="https://github.com/Rinimabi">
-        <img src="https://avatars.githubusercontent.com/u/18625271?size=100" width="100" height="100" alt="Rinimabi" style="border-radius: 50%;" />
-      </a>
-    </td>
-  </tr>
-  <tr>
-    <td align="center">
-      <a href="https://github.com/GotoFox">
-        <img src="https://avatars.githubusercontent.com/u/68596145?size=100" width="100" height="100" alt="GotoFox" style="border-radius: 50%;" />
-      </a>
-    </td>
-    <td align="center">
-      <a href="https://github.com/changshunxu520">
-        <img src="https://avatars.githubusercontent.com/u/16171624?size=100" width="100" height="100" alt="changshunxu520" style="border-radius: 50%;" />
-      </a>
-    </td>
-    <td align="center">
-      <a href="https://github.com/lie5860">
-        <img src="https://avatars.githubusercontent.com/u/30894657?size=100" width="100" height="100" alt="lie5860" style="border-radius: 50%;" />
-      </a>
-    </td>
-    <td align="center">
-      <a href="https://github.com/buddhist-coder">
-        <img src="https://avatars.githubusercontent.com/u/61658071?size=100" width="100" height="100" alt="buddhist-coder" style="border-radius: 50%;" />
-      </a>
-    </td>
-    <td align="center">
-      <a href="https://github.com/LaCreArthur">
-        <img src="https://avatars.githubusercontent.com/u/14138307?size=100" width="100" height="100" alt="LaCreArthur" style="border-radius: 50%;" />
-      </a>
-    </td>
-    <td align="center">
-      <a href="https://github.com/dungnguyent8">
-        <img src="https://avatars.githubusercontent.com/u/39462756?size=100" width="100" height="100" alt="dungnguyent8" style="border-radius: 50%;" />
-      </a>
-      <div>🔥</div>
-    </td>
-    <td align="center">
-      <a href="https://github.com/magic5295">
-        <img src="https://avatars.githubusercontent.com/u/157901486?size=100" width="100" height="100" alt="magic5295" style="border-radius: 50%;" />
-      </a>
-    </td>
-  </tr>
-  <tr>
-    <td align="center">
-      <a href="https://github.com/JackWPP">
-        <img src="https://avatars.githubusercontent.com/u/120316122?size=100" width="100" height="100" alt="JackWPP" style="border-radius: 50%;" />
-      </a>
-    </td>
-    <td align="center">
-      <a href="https://github.com/luhua-123">
-        <img src="https://avatars.githubusercontent.com/u/83643600?size=100" width="100" height="100" alt="luhua-123" style="border-radius: 50%;" />
-      </a>
-    </td>
-    <td align="center">
-      <a href="https://github.com/geofqiu-hub">
-        <img src="https://avatars.githubusercontent.com/u/248376932?size=100" width="100" height="100" alt="geofqiu-hub" style="border-radius: 50%;" />
-      </a>
-    </td>
-    <td align="center">
-      <a href="https://github.com/1lck">
-        <img src="https://avatars.githubusercontent.com/u/159525154?size=100" width="100" height="100" alt="1lck" style="border-radius: 50%;" />
-      </a>
-    </td>
-    <td align="center">
-      <a href="https://github.com/fz-lyle">
-        <img src="https://avatars.githubusercontent.com/u/35370530?size=100" width="100" height="100" alt="fz-lyle" style="border-radius: 50%;" />
-      </a>
-    </td>
-    <td align="center">
-      <a href="https://github.com/dsudomoin">
-        <img src="https://avatars.githubusercontent.com/u/155488585?size=100" width="100" height="100" alt="dsudomoin" style="border-radius: 50%;" />
-      </a>
-    </td>
-    <td align="center">
-      <a href="https://github.com/serega0005">
-        <img src="https://avatars.githubusercontent.com/u/39858725?size=100" width="100" height="100" alt="serega0005" style="border-radius: 50%;" />
-      </a>
-    </td>
-  </tr>
-  <tr>
-    <td align="center">
-      <a href="https://github.com/jhaan83">
-        <img src="https://avatars.githubusercontent.com/u/45828854?size=100" width="100" height="100" alt="jhaan83" style="border-radius: 50%;" />
-      </a>
-    </td>
-    <td align="center">
-      <a href="https://github.com/Olexandr1904">
-        <img src="https://avatars.githubusercontent.com/u/12022163?size=100" width="100" height="100" alt="Olexandr1904" style="border-radius: 50%;" />
-      </a>
-    </td>
-  </tr>
-</table>
+**Provider 管理**：插件内支持多家 API 供应商的增删改查与切换（兼容 cc-switch 思路，支持 DeepSeek 等），切换后会将激活供应商的环境变量注入 ai-bridge 子进程。
 
 ---
 
-## 赞助支持
+## 致谢 (Acknowledgements)
 
-如果这个项目对你有帮助，想请作者吃顿肯德基（KFC）或者喝杯咖啡，都是可以的~
+本插件基于开源项目 **[jetbrains-cc-gui](https://github.com/zhukunpenglinyutong/jetbrains-cc-gui)**（作者 [@zhukunpenglinyutong](https://github.com/zhukunpenglinyutong)）移植而来，复用了其前端与 ai-bridge 设计。在此向原作者及所有贡献者的辛勤工作致以诚挚的感谢！
 
-[查看赞助者列表 →](./SPONSORS.md)
+This plugin is ported from the open-source project **[jetbrains-cc-gui](https://github.com/zhukunpenglinyutong/jetbrains-cc-gui)**. Heartfelt thanks to the original author and all contributors for their excellent work.
 
----
-
-## AtomGit
-
-https://atomgit.com/zhukunpenglinyutong/idea-claude-code-gui
-
----
-
-## 友链
-
-感谢 [LINUX DO](https://linux.do/) 用户的支持与反馈
-
-感谢[AtomGit](https://atomgit.com/zhukunpenglinyutong/idea-claude-code-gui)平台G-Star认证
-
----
-
-## 致谢
-
-最近有很多博主自发推荐本项目，心中十分感激，再次感谢《沉默的王二》《macrozheng》《JavaGuide》《Java知音》《鲲鹏talk 公众号》《程序员青戈》等博主推荐本项目，我会继续努力迭代，让大家用起来更舒适。
-
----
-
-## Star History
-
-[![Star History](https://api.star-history.com/svg?repos=zhukunpenglinyutong/idea-claude-code-gui&type=date&legend=top-left)](https://www.star-history.com/#zhukunpenglinyutong/idea-claude-code-gui&type=date&legend=top-left)
-
-<!-- LINK GROUP -->
-
-[github-contributors-shield]: https://img.shields.io/github/contributors/zhukunpenglinyutong/idea-claude-code-gui?color=c4f042&labelColor=black&style=flat-square
-[github-forks-shield]: https://img.shields.io/github/forks/zhukunpenglinyutong/idea-claude-code-gui?color=8ae8ff&labelColor=black&style=flat-square
-[github-issues-link]: https://github.com/zhukunpenglinyutong/idea-claude-code-gui/issues
-[github-issues-shield]: https://img.shields.io/github/issues/zhukunpenglinyutong/idea-claude-code-gui?color=ff80eb&labelColor=black&style=flat-square
-[github-license-link]: https://github.com/zhukunpenglinyutong/idea-claude-code-gui/blob/main/LICENSE
-[github-stars-shield]: https://img.shields.io/github/stars/zhukunpenglinyutong/idea-claude-code-gui?color=ffcb47&labelColor=black&style=flat-square
-[github-mit]: https://img.shields.io/badge/github-MIT-blue?logo=github
+原项目与本项目均采用 **MIT** 许可证开源。

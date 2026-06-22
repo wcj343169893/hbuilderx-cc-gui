@@ -2,10 +2,11 @@ import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import ChangelogDialog from '../../ChangelogDialog';
 import { CHANGELOG_DATA } from '../../../version/changelog';
-import wxqImage from '../../../assets/images/wxq.png';
+// 暂时屏蔽官方交流群，如需恢复取消注释
+// import wxqImage from '../../../assets/images/wxq.png';
 import styles from './style.module.less';
 
-const GITHUB_URL = 'https://github.com/zhukunpenglinyutong/idea-claude-code-gui';
+const GITHUB_URL = 'https://github.com/wcj343169893/hbuilderx-cc-gui';
 
 interface CommunitySectionProps {
   addToast: (message: string, type?: 'info' | 'success' | 'warning' | 'error') => void;
@@ -26,7 +27,9 @@ const CommunitySection = ({ addToast }: CommunitySectionProps) => {
 
   return (
     <div className={styles.configSection}>
+      {/* 暂时屏蔽官方交流群，如需恢复取消注释 */}
       {/* Official community group */}
+      {/*
       <h3 className={styles.sectionTitle}>{t('settings.community')}</h3>
       <p className={styles.sectionDesc}>{t('settings.communityDesc')}</p>
 
@@ -40,6 +43,7 @@ const CommunitySection = ({ addToast }: CommunitySectionProps) => {
           <p className={styles.qrcodeTip}>{t('settings.communityQrTip')}</p>
         </div>
       </div>
+      */}
 
       {/* GitHub open source */}
       <div className={styles.githubSection}>
