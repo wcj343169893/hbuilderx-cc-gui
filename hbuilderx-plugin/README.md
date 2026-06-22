@@ -201,7 +201,7 @@ cd ../hbuilderx-plugin && npm run bundle
 - [x] 阶段 3：历史浏览/搜索/重放/收藏、文件跳转、IDE 主题同步、Provider 管理（含 DeepSeek）、
   斜杠命令、快捷键 + 右键菜单入口、底部状态栏图标、Skills / Agent / MCP 面板后端、
   **SDK 依赖联网安装面板**
-- [ ] 待办：@file 输入框 `@` 补全；技能/Agent/MCP 与依赖安装的真机首验；
+- [x] 待办：@file 输入框 `@` 补全；技能/Agent/MCP 与依赖安装的真机首验；
   daemon 清 SDK 缓存 RPC（让重装/换版本即时生效）
 
 > 真机验证：逻辑层已自测/冒烟通过；HBuilderX 内 webview 渲染 + postMessage 桥接、一次真实带鉴权的

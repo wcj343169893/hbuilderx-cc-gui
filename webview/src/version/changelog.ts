@@ -13,6 +13,16 @@ export interface ChangelogEntry {
 
 export const CHANGELOG_DATA: ChangelogEntry[] = [
   {
+    version: '0.1.3',
+    date: '2026-06-22',
+    content: {
+      en: `🛠 Changes
+- Fix the input box \`@\` file completion returning no matches: you can now search by file name / path keyword, and it lists the current project directory when there's no keyword`,
+      zh: `🛠 本次更新
+- 修复输入框 \`@\` 文件补全无匹配的问题：现已支持按文件名/路径关键字搜索，无关键字时列出当前项目目录`,
+    },
+  },
+  {
     version: '0.1.2',
     date: '2026-06-22',
     content: {

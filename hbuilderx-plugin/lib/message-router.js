@@ -16,6 +16,33 @@ const agentService = require('./agent-service');
 const mcpService = require('./mcp-service');
 const dependencyService = require('./dependency-service');
 
+// ===== @文件补全（list_files）扫描参数 =====
+// 对齐 IDEA 版 FileSystemCollector 的硬编码跳过集 / 上限（含递归深度与单目录子项数）。
+const LIST_FILES_MAX_RESULTS = 200;
+const LIST_FILES_MAX_DEPTH = 15;
+const LIST_FILES_MAX_CHILDREN = 100;
+const LIST_FILES_SKIP_DIRS = new Set([
+  // 版本控制
+  '.git', '.svn', '.hg', '.bzr',
+  // 包管理 / 依赖缓存
+  'node_modules', '__pycache__', '.pnpm', 'bower_components',
+  '.m2', '.gradle', '.ivy2', '.sbt', '.coursier',
+  '.npm', '.yarn', '.pnpm-store', '.cargo', '.rustup',
+  '.pub-cache', '.gem', '.bundle', '.composer', '.nuget',
+  '.cache', '.local',
+  // 构建产物
+  'target', 'build', 'dist', 'out', 'output', 'bin', 'obj',
+  // IDE / 编辑器配置
+  '.idea', '.vscode', '.vs', '.eclipse', '.settings',
+  // 虚拟环境
+  'venv', '.venv', 'env', '.env', 'virtualenv',
+  // 测试 / 覆盖率
+  'coverage', '.nyc_output', '.pytest_cache', '__snapshots__',
+  // 临时 / 日志
+  'tmp', 'temp', 'logs', '.tmp', '.temp',
+]);
+const LIST_FILES_SKIP_FILES = new Set(['.DS_Store', 'Thumbs.db', 'desktop.ini']);
+
 /**
  * 事件路由：把 webview 出站事件映射到 ai-bridge 调用，并把流式结果回灌前端。
  * 移植自 src/.../handler/core/MessageDispatcher + 各 handler + SessionLifecycleManager 的 MVP 子集。
@@ -660,6 +687,9 @@ class MessageRouter {
         break;
       case 'resolve_file_path':
         this._handleResolveFilePath(content);
+        break;
+      case 'list_files':
+        this._handleListFiles(content);
         break;
       case 'get_ide_theme':
         this._handleGetIdeTheme();
@@ -1379,6 +1409,134 @@ class MessageRouter {
     } catch (e) {
       this.output.appendLine(`[router] resolve_file_path 回调失败: ${e && e.message}`);
     }
+  }
+
+  // ===================== @文件补全（list_files）=====================
+
+  /**
+   * list_files：前端输入框 `@` 补全的数据源。
+   * 载荷 {query, currentPath}（currentPath 形如 `src/`，query 是末段搜索词）；回 onFileListResult({files})。
+   * 移植自 IDEA 版 FileHandler/FileSystemCollector 的「磁盘扫描」分支（终端/服务/已开/最近文件等 IDE 专有源未移植）：
+   * - 有 query：从 cwd 递归扫描，文件名或相对路径（小写）包含 query 即命中，限 200 条、深度 15。
+   * - 无 query：列出 cwd/currentPath 下的直接子项（非递归），限 100 条。
+   * 缺 cwd（未打开项目）回空列表，前端 3s 超时也会兜底，但显式回更快且能复位 spinner。
+   */
+  async _handleListFiles(content) {
+    let files = [];
+    try {
+      await this._ensureCwd();
+      const base = this.cwd;
+      if (!base) {
+        this.bridge.callJs('onFileListResult', JSON.stringify({ files: [] }));
+        return;
+      }
+      let query = '';
+      let currentPath = '';
+      if (content) {
+        try {
+          const obj = JSON.parse(content);
+          query = obj && obj.query ? String(obj.query) : '';
+          currentPath = obj && obj.currentPath ? String(obj.currentPath) : '';
+        } catch (e) {
+          query = String(content).trim(); // 非 JSON：整串当搜索词
+        }
+      }
+      const q = query.toLowerCase();
+      if (q) {
+        files = this._scanFilesRecursive(base, base, q, 0, []);
+      } else {
+        files = this._listDirectChildren(base, path.join(base, currentPath));
+      }
+      this._sortListFiles(files);
+    } catch (e) {
+      this.output.appendLine(`[router] list_files 异常: ${e && e.message}`);
+      files = [];
+    }
+    try {
+      this.bridge.callJs('onFileListResult', JSON.stringify({ files }));
+    } catch (e) {
+      this.output.appendLine(`[router] list_files 回调失败: ${e && e.message}`);
+    }
+  }
+
+  /** 跳过噪声目录/文件（硬编码集，对齐 Java shouldSkipInSearch 基础版；未做 .gitignore 解析）。 */
+  _listFilesShouldSkip(name, isDir) {
+    return isDir ? LIST_FILES_SKIP_DIRS.has(name) : LIST_FILES_SKIP_FILES.has(name);
+  }
+
+  /** 构造与 Java createFileObject 同形的 FileItem：{name, path(相对/正斜杠), absolutePath(正斜杠), type, extension?}。 */
+  _listFileObject(base, absPath, isDir) {
+    const name = path.basename(absPath);
+    const obj = {
+      name,
+      path: path.relative(base, absPath).replace(/\\/g, '/'),
+      absolutePath: absPath.replace(/\\/g, '/'),
+      type: isDir ? 'directory' : 'file',
+    };
+    if (!isDir) {
+      const dot = name.lastIndexOf('.');
+      if (dot > 0) obj.extension = name.slice(dot + 1);
+    }
+    return obj;
+  }
+
+  /** 列出目录直接子项（非递归），限 LIST_FILES_MAX_CHILDREN 条。 */
+  _listDirectChildren(base, dir) {
+    const out = [];
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (e) {
+      return out; // 目录不存在/无权限：回空
+    }
+    for (const ent of entries) {
+      if (out.length >= LIST_FILES_MAX_CHILDREN) break;
+      const isDir = ent.isDirectory();
+      if (this._listFilesShouldSkip(ent.name, isDir)) continue;
+      out.push(this._listFileObject(base, path.join(dir, ent.name), isDir));
+    }
+    return out;
+  }
+
+  /** 从 dir 递归扫描，名字或相对路径(小写)含 q 即收入 acc；限深度与总条数。acc 引用累积。 */
+  _scanFilesRecursive(base, dir, q, depth, acc) {
+    if (depth > LIST_FILES_MAX_DEPTH || acc.length >= LIST_FILES_MAX_RESULTS) return acc;
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (e) {
+      return acc;
+    }
+    for (const ent of entries) {
+      if (acc.length >= LIST_FILES_MAX_RESULTS) break;
+      const isDir = ent.isDirectory();
+      if (this._listFilesShouldSkip(ent.name, isDir)) continue;
+      const abs = path.join(dir, ent.name);
+      const rel = path.relative(base, abs).replace(/\\/g, '/');
+      if (ent.name.toLowerCase().includes(q) || rel.toLowerCase().includes(q)) {
+        acc.push(this._listFileObject(base, abs, isDir));
+      }
+      // 目录始终下钻：自身不命中但子项可能命中
+      if (isDir) this._scanFilesRecursive(base, abs, q, depth + 1, acc);
+    }
+    return acc;
+  }
+
+  /** 排序：浅层优先 → 父目录 → 目录在前 → 名字（对齐 Java priority-3 排序，提升「文件名匹配」可见性）。 */
+  _sortListFiles(files) {
+    files.sort((a, b) => {
+      const da = a.path.split('/').length;
+      const db = b.path.split('/').length;
+      if (da !== db) return da - db;
+      const pa = a.path.slice(0, a.path.lastIndexOf('/') + 1);
+      const pb = b.path.slice(0, b.path.lastIndexOf('/') + 1);
+      if (pa !== pb) return pa.localeCompare(pb);
+      const ad = a.type === 'directory';
+      const bd = b.type === 'directory';
+      if (ad !== bd) return ad ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+    return files;
   }
 
   // ===================== 技能面板（Skills）=====================
