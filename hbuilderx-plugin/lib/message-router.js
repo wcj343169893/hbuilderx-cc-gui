@@ -295,20 +295,15 @@ class MessageRouter {
 
   /**
    * 选定本次会话所属项目（HBuilderX 可同时打开多个项目）。
-   * 优先级：持久化的上次项目 → 当前活动编辑器所在项目 → 第一个。
+   * 优先级：① 当前正在编辑的文件所属项目 → ② 第一个项目。
+   * 一个项目都没有时返回空，由调用方（_handleRequestProject）提示用户先创建/打开项目。
    * @returns {Promise<{path:string,name:string}>}
    */
   async _resolveActiveProject() {
     const folders = await this._resolveWorkspaceFolders();
     if (folders.length === 0) return { path: '', name: '' };
     if (folders.length === 1) return folders[0];
-    // 1) 上次选择（持久化）
-    const last = this._prefs.projectPath;
-    if (last) {
-      const hit = folders.find((f) => f.path === last);
-      if (hit) return hit;
-    }
-    // 2) 当前活动编辑器所在项目（取最长前缀匹配）
+    // ① 当前正在编辑的文件所属项目（取最长前缀匹配）
     try {
       const editor = await this.hx.window.getActiveTextEditor();
       const fsPath = editor && editor.document && editor.document.uri && editor.document.uri.fsPath;
@@ -319,7 +314,7 @@ class MessageRouter {
         if (containing) return containing;
       }
     } catch (e) { /* ignore */ }
-    // 3) 兜底首个
+    // ② 编辑区没有文件 / 文件不属于任何已打开项目：兜底用第一个项目
     return folders[0];
   }
 
@@ -735,7 +730,7 @@ class MessageRouter {
 
     this.cwd = chosen.path;
     this.projectName = chosen.name;
-    this._persist({ projectPath: this.cwd });
+    // 注：默认项目按「活动编辑器→第一个」解析，不再持久化「上次选择」，故此处不写 projectPath。
     this.output.appendLine(`[router] 切换项目 -> ${this.projectName} (${this.cwd})`);
     this._handleNewSession(); // 切到不同项目：历史按项目隔离，开新会话
     this._emitProject();
@@ -750,7 +745,23 @@ class MessageRouter {
     if (!this.cwd) {
       this.cwd = await this._resolveCwd(); // 顺带同步 this.projectName
     }
+    if (!this.cwd) {
+      // 一个项目都没有：提示用户先创建/打开项目（每进程仅提示一次，避免重载刷屏）
+      this._promptNoProject();
+    }
     this._emitProject();
+  }
+
+  /** 未打开任何项目时提示先创建/打开项目；每进程仅提示一次。 */
+  _promptNoProject() {
+    if (this._noProjectPrompted) return;
+    this._noProjectPrompted = true;
+    try {
+      this.hx.window.showInformationMessage(
+        '尚未打开任何项目。CC GUI 需要一个项目作为工作目录，请先在 HBuilderX 中新建或打开一个项目后再使用。',
+        ['知道了'],
+      );
+    } catch (e) { /* ignore */ }
   }
 
   /**
