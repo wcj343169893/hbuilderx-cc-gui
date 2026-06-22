@@ -25,6 +25,7 @@ import {
   PLAN_COMMANDS,
   CONTEXT_COMMANDS,
 } from './hooks/useMessageSender';
+import { useProjectName } from './hooks/useProjectName';
 import { applyDiffTheme, getStoredDiffTheme } from './utils/diffTheme';
 import type { Attachment, ChatInputBoxHandle } from './components/ChatInputBox/types';
 import { ToastContainer } from './components/Toast';
@@ -414,6 +415,9 @@ const App = () => {
 
   const statusPanelExpanded = !userCollapsedRef.current;
 
+  // HBuilderX 多项目：当前会话所属项目名（顶部会话名后展示，点击可切换）。IDEA 版不推送，为空不展示。
+  const { projectName, selectProject } = useProjectName();
+
   // ── Render ──
   return (
     <>
@@ -421,6 +425,8 @@ const App = () => {
       <ChatHeader
         currentView={currentView}
         sessionTitle={sessionTitle}
+        projectName={projectName}
+        onSelectProject={selectProject}
         t={t}
         onBack={() => setCurrentView('chat')}
         onNewSession={createNewSession}

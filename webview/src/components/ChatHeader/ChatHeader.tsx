@@ -19,6 +19,10 @@ export interface ChatHeaderProps {
   onOpenSearch?: () => void;
   onTitleChange?: (newTitle: string) => void;
   titleEditable?: boolean;
+  /** HBuilderX 多项目：当前会话所属项目名，展示在会话名之后；为空则不展示（如 IDEA 版）。 */
+  projectName?: string;
+  /** 点击项目名切换项目（HBuilderX 弹原生选择器）。 */
+  onSelectProject?: () => void;
 }
 
 export function ChatHeader({
@@ -33,6 +37,8 @@ export function ChatHeader({
   onOpenSearch,
   onTitleChange,
   titleEditable = false,
+  projectName,
+  onSelectProject,
 }: ChatHeaderProps): React.ReactElement | null {
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState('');
@@ -125,6 +131,37 @@ export function ChatHeader({
             <div className="session-title">
               {sessionTitle}
             </div>
+            {projectName && onSelectProject && (
+              <button
+                type="button"
+                className="project-chip"
+                onClick={onSelectProject}
+                title={t('chat.switchProject', { defaultValue: '切换项目' })}
+                aria-label={t('chat.switchProject', { defaultValue: '切换项目' })}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  marginLeft: 8,
+                  padding: '0 8px',
+                  height: 18,
+                  lineHeight: '18px',
+                  fontSize: 12,
+                  maxWidth: 180,
+                  border: '1px solid var(--vscode-widget-border, rgba(128,128,128,0.4))',
+                  borderRadius: 9,
+                  background: 'transparent',
+                  color: 'inherit',
+                  opacity: 0.85,
+                  cursor: 'pointer',
+                  whiteSpace: 'nowrap',
+                  flex: '0 0 auto',
+                }}
+              >
+                <span className="codicon codicon-folder" style={{ fontSize: 12 }} />
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{projectName}</span>
+              </button>
+            )}
             {titleEditable && (
               <button className="session-title-edit-btn" onClick={startEditing} aria-label="Edit session title">
                 <span className="codicon codicon-edit" />

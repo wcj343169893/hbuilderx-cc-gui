@@ -43,6 +43,7 @@ class MessageRouter {
     this.model = this._prefs.model || '';
     this.permissionMode = this._prefs.permissionMode || this._readPermissionMode();
     this.cwd = ''; // getWorkspaceFolders() 是异步的，构造里拿不到，改在 init()/发送前 await 解析
+    this.projectName = ''; // 当前会话所属项目名（HBuilderX 可同时打开多个项目，顶部会话名后展示）
     this._busy = false;
 
     // 历史面板当前 provider（前端在 load_history_data/deep_search_history 时下发，后续 load/delete/export 沿用）
@@ -271,21 +272,67 @@ class MessageRouter {
    * 注意：hx.workspace.getWorkspaceFolders() 返回 Promise（见 HBuilderX 文档），必须 await；
    * WorkspaceFolder.uri 可能是字符串路径或 Uri 对象。
    */
-  async _resolveCwd() {
+  /** 解析 HBuilderX 当前打开的所有项目目录（可能多个）。返回 [{id,name,path}]。 */
+  async _resolveWorkspaceFolders() {
     try {
       let folders = this.hx.workspace.getWorkspaceFolders();
       if (folders && typeof folders.then === 'function') folders = await folders;
-      if (Array.isArray(folders) && folders.length > 0) {
-        const uri = folders[0].uri;
-        if (uri && typeof uri === 'object' && uri.fsPath) return uri.fsPath;
-        if (typeof uri === 'string') return uri;
-        if (folders[0].fsPath) return folders[0].fsPath;
-        if (folders[0].path) return folders[0].path;
-      }
+      if (!Array.isArray(folders)) return [];
+      return folders.map((f) => {
+        let p = '';
+        const uri = f && f.uri;
+        if (uri && typeof uri === 'object' && uri.fsPath) p = uri.fsPath;
+        else if (typeof uri === 'string') p = uri;
+        else if (f && f.fsPath) p = f.fsPath;
+        else if (f && f.path) p = f.path;
+        return { id: (f && f.id) || p, name: (f && f.name) || (p ? path.basename(p) : ''), path: p };
+      }).filter((f) => f.path);
     } catch (e) {
-      this.output.appendLine(`[router] 解析 cwd 失败: ${e && e.message}`);
+      this.output.appendLine(`[router] 解析项目列表失败: ${e && e.message}`);
+      return [];
     }
-    return '';
+  }
+
+  /**
+   * 选定本次会话所属项目（HBuilderX 可同时打开多个项目）。
+   * 优先级：持久化的上次项目 → 当前活动编辑器所在项目 → 第一个。
+   * @returns {Promise<{path:string,name:string}>}
+   */
+  async _resolveActiveProject() {
+    const folders = await this._resolveWorkspaceFolders();
+    if (folders.length === 0) return { path: '', name: '' };
+    if (folders.length === 1) return folders[0];
+    // 1) 上次选择（持久化）
+    const last = this._prefs.projectPath;
+    if (last) {
+      const hit = folders.find((f) => f.path === last);
+      if (hit) return hit;
+    }
+    // 2) 当前活动编辑器所在项目（取最长前缀匹配）
+    try {
+      const editor = await this.hx.window.getActiveTextEditor();
+      const fsPath = editor && editor.document && editor.document.uri && editor.document.uri.fsPath;
+      if (fsPath) {
+        const containing = folders
+          .filter((f) => fsPath === f.path || fsPath.startsWith(f.path + path.sep))
+          .sort((a, b) => b.path.length - a.path.length)[0];
+        if (containing) return containing;
+      }
+    } catch (e) { /* ignore */ }
+    // 3) 兜底首个
+    return folders[0];
+  }
+
+  /** 解析当前 cwd（并同步 projectName）。供 init / 发送前兜底调用。 */
+  async _resolveCwd() {
+    const proj = await this._resolveActiveProject();
+    this.projectName = proj.name || '';
+    return proj.path || '';
+  }
+
+  /** 向前端顶部推送当前项目名（会话名后展示）。 */
+  _emitProject() {
+    this.bridge.callJs('onProjectChanged', JSON.stringify({ name: this.projectName || '', path: this.cwd || '' }));
   }
 
   /** 启动：探测 Node、拉起 ai-bridge daemon。 */
@@ -346,6 +393,8 @@ class MessageRouter {
     this._emitProviders();
     // 即时填充斜杠命令菜单（首次发送后由 system 消息刷新为真实/技能命令）
     this.bridge.callJs('updateSlashCommands', JSON.stringify(this._builtinSlashCommands()));
+    // 顶部展示当前会话所属项目（HBuilderX 可同时打开多个项目）
+    this._emitProject();
   }
 
   /** 出站事件分发器（注册到 BridgeHost.onEvent）。 */
@@ -356,6 +405,9 @@ class MessageRouter {
         break;
       case 'create_new_session':
         this._handleNewSession();
+        break;
+      case 'select_project':
+        this._handleSelectProject(content);
         break;
       case 'load_session':
         this._handleLoadSession(content);
@@ -630,6 +682,57 @@ class MessageRouter {
     this.sessionId = '';
     this.assembler.reset();
     this.bridge.callJs('clearMessages');
+  }
+
+  /**
+   * 选择/切换本次会话所属项目（HBuilderX 可同时打开多个项目）。
+   * content 为空 -> 弹原生 showQuickPick 让用户选；content={path} -> 直接切到该项目。
+   * 切换即在新项目里开新会话（历史/技能/MCP 均按项目隔离），并刷新顶部项目名。
+   */
+  async _handleSelectProject(content) {
+    const folders = await this._resolveWorkspaceFolders();
+    if (folders.length === 0) {
+      this.projectName = '';
+      this._emitProject();
+      return;
+    }
+
+    let chosen = null;
+    try {
+      const obj = content ? JSON.parse(content) : null;
+      if (obj && obj.path) chosen = folders.find((f) => f.path === obj.path) || null;
+    } catch (e) { /* content 非 JSON：走选择器 */ }
+
+    if (!chosen) {
+      if (folders.length === 1) {
+        chosen = folders[0];
+      } else {
+        try {
+          const items = folders.map((f) => ({ label: f.name, description: f.path }));
+          const picked = await this.hx.window.showQuickPick(items, { placeHolder: '选择本次会话使用的项目' });
+          if (!picked) return; // 用户取消
+          chosen = folders.find((f) => f.path === picked.description) || null;
+        } catch (e) {
+          this.output.appendLine(`[router] 选择项目失败: ${e && e.message}`);
+          return;
+        }
+      }
+    }
+    if (!chosen || !chosen.path) return;
+
+    // 选中的就是当前项目：仅刷新顶部展示，不动当前会话（避免点一下就误清空对话）
+    if (chosen.path === this.cwd) {
+      this.projectName = chosen.name;
+      this._emitProject();
+      return;
+    }
+
+    this.cwd = chosen.path;
+    this.projectName = chosen.name;
+    this._persist({ projectPath: this.cwd });
+    this.output.appendLine(`[router] 切换项目 -> ${this.projectName} (${this.cwd})`);
+    this._handleNewSession(); // 切到不同项目：历史按项目隔离，开新会话
+    this._emitProject();
   }
 
   /**

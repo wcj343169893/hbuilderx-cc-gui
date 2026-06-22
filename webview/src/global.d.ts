@@ -143,6 +143,12 @@ interface Window {
   onModeReceived?: (mode: string) => void;
 
   /**
+   * Project changed callback (HBuilderX multi-project). Backend pushes the project bound to the
+   * current session as JSON `{ name, path }`; shown after the session title in the header.
+   */
+  onProjectChanged?: (json: string) => void;
+
+  /**
    * Model changed callback
    */
   onModelChanged?: (modelId: string) => void;
