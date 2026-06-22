@@ -22,7 +22,25 @@ const CONTAINER_ID = 'ccgui.container';
 // 调试日志文件：HBuilderX 的 .log 不收录插件 OutputChannel 输出，故同时写一份到磁盘便于排查。
 const LOG_FILE = path.join(os.homedir(), '.codemoss', 'ccgui-debug.log');
 
-/** 构造 output：同时写 HBuilderX OutputChannel 和磁盘日志文件。 */
+/**
+ * 是否把日志输出到「CC GUI」OutputChannel。
+ * 正式发布默认 **关闭**——只静默记录到磁盘日志文件，不向用户展示。
+ * 开发期可通过 设置项 `ccgui.debugLog=true` 或 环境变量 `CCGUI_DEBUG=1` 打开。
+ */
+function isDebugLogEnabled() {
+  const env = process.env.CCGUI_DEBUG;
+  if (env === '1' || env === 'true') return true;
+  try {
+    return hx.workspace.getConfiguration().get('ccgui.debugLog') === true;
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
+ * 构造 output：始终写磁盘日志文件（内部排查用）；仅当 channel 非空（调试模式）时才写
+ * HBuilderX OutputChannel（即向用户可见）。
+ */
 function buildOutput(channel) {
   let fileOk = true;
   try {
@@ -31,7 +49,9 @@ function buildOutput(channel) {
   } catch (e) { fileOk = false; }
   return {
     appendLine(s) {
-      try { channel.appendLine(s); } catch (e) { /* ignore */ }
+      if (channel) {
+        try { channel.appendLine(s); } catch (e) { /* ignore */ }
+      }
       if (fileOk) {
         try { fs.appendFileSync(LOG_FILE, s + '\n'); } catch (e) { /* ignore */ }
       }
@@ -46,7 +66,8 @@ let router = null;
 let statusBar = null;
 
 function activate(context) {
-  const channel = hx.window.createOutputChannel('CC GUI');
+  // 正式发布默认不创建 OutputChannel（不向用户展示日志）；调试模式才创建并展示。
+  const channel = isDebugLogEnabled() ? hx.window.createOutputChannel('CC GUI') : null;
   output = buildOutput(channel);
   output.appendLine(`[ccgui] 插件已激活 @ ${new Date().toISOString()}（日志文件: ${LOG_FILE}）`);
 
@@ -55,7 +76,8 @@ function activate(context) {
     panel = created.panel;
     bridge = created.bridge;
 
-    // 接入事件路由：出站事件 -> ai-bridge；流式结果回灌前端
+    // 接入事件路由：出站事件 -> ai-bridge；流式结果回灌前端。
+    // 热升级复用旧 bridge 时，这里把其派发重新指向新建的 router（bridge 监听唯一，不会重复派发）。
     router = new MessageRouter(hx, bridge, output);
     bridge.onEvent((event, content) => router.dispatch(event, content));
 
@@ -65,6 +87,12 @@ function activate(context) {
       .catch((err) => output.appendLine(`[ccgui] router.init 失败: ${err && err.message}`));
   } catch (err) {
     output.appendLine(`[ccgui] 创建视图失败: ${err && err.stack ? err.stack : err}`);
+    // 极端情况下无法复用旧视图（如缓存失效）：给用户清晰指引，而非留下损坏的界面。
+    if (/already\s*registered/i.test((err && err.message) || String(err))) {
+      try {
+        hx.window.showInformationMessage('CC GUI 已更新，请重启 HBuilderX 以完成升级。', ['知道了']);
+      } catch (e) { /* ignore */ }
+    }
   }
 
   // 注册打开命令：聚焦到 CC GUI 视图
@@ -175,13 +203,9 @@ function deactivate() {
   } catch (e) {
     /* ignore */
   }
-  try {
-    if (panel && typeof panel.dispose === 'function') {
-      panel.dispose();
-    }
-  } catch (e) {
-    /* ignore */
-  }
+  // 故意**不** dispose panel：HBuilderX 的 panel.dispose() 只关闭 tab、不注销视图 provider，
+  // 而热升级（不重启）会在新版 activate 重新 createWebView 同一 viewId 抛 "already registered"。
+  // 保留视图与 bridge（globalThis.__ccguiWebView 持有引用）供新版复用，是规避该崩溃的关键。
   try {
     if (statusBar && typeof statusBar.dispose === 'function') {
       statusBar.dispose();
