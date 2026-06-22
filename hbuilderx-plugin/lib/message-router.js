@@ -294,6 +294,32 @@ class MessageRouter {
   }
 
   /**
+   * 路径归一化（用于「文件属于哪个项目」前缀匹配）：统一分隔符、去尾分隔符；
+   * Windows 文件系统大小写不敏感故转小写。
+   * 关键：`editor.document.uri.fsPath` 在 Windows 可能是正斜杠 / 小写盘符（如 `d:/.../movie/x.md`），
+   * 而 `WorkspaceFolder.path` 可能是反斜杠（`D:\...\movie`）——不归一化直接 `startsWith` 会匹配失败，
+   * 进而误落到兜底的第一个项目（曾导致开 movie 的文件却定位到 it-tools）。
+   */
+  _normPath(p) {
+    if (!p) return '';
+    let s = String(p).replace(/[\\/]+/g, path.sep).replace(/[\\/]+$/, '');
+    if (process.platform === 'win32') s = s.toLowerCase();
+    return s;
+  }
+
+  /** 在 folders 中找包含 fsPath 的项目（归一化后最长前缀匹配）。无则 null。 */
+  _folderContaining(folders, fsPath) {
+    const nf = this._normPath(fsPath);
+    if (!nf) return null;
+    return folders
+      .filter((f) => {
+        const np = this._normPath(f.path);
+        return np && (nf === np || nf.startsWith(np + path.sep));
+      })
+      .sort((a, b) => b.path.length - a.path.length)[0] || null;
+  }
+
+  /**
    * 选定本次会话所属项目（HBuilderX 可同时打开多个项目）。
    * 优先级：① 当前正在编辑的文件所属项目 → ② 第一个项目。
    * 一个项目都没有时返回空，由调用方（_handleRequestProject）提示用户先创建/打开项目。
@@ -307,13 +333,10 @@ class MessageRouter {
     try {
       const editor = await this.hx.window.getActiveTextEditor();
       const fsPath = editor && editor.document && editor.document.uri && editor.document.uri.fsPath;
-      if (fsPath) {
-        const containing = folders
-          .filter((f) => fsPath === f.path || fsPath.startsWith(f.path + path.sep))
-          .sort((a, b) => b.path.length - a.path.length)[0];
-        if (containing) return containing;
-      }
-    } catch (e) { /* ignore */ }
+      this.output.appendLine(`[router] _resolveActiveProject: activeFile=${fsPath || '(none)'} folders=[${folders.map((f) => f.path).join(', ')}]`);
+      const containing = this._folderContaining(folders, fsPath);
+      if (containing) return containing;
+    } catch (e) { this.output.appendLine(`[router] _resolveActiveProject 异常: ${e && e.message}`); }
     // ② 编辑区没有文件 / 文件不属于任何已打开项目：兜底用第一个项目
     return folders[0];
   }
@@ -399,7 +422,7 @@ class MessageRouter {
         this._handleSend(content);
         break;
       case 'create_new_session':
-        this._handleNewSession();
+        this._handleNewSessionFromUser();
         break;
       case 'select_project':
         this._handleSelectProject(content);
@@ -734,6 +757,67 @@ class MessageRouter {
     this.output.appendLine(`[router] 切换项目 -> ${this.projectName} (${this.cwd})`);
     this._handleNewSession(); // 切到不同项目：历史按项目隔离，开新会话
     this._emitProject();
+  }
+
+  /**
+   * 纯切换原语：若「当前活动编辑器文件」属于另一个已打开项目，则切 cwd/projectName。
+   * 只改 cwd/projectName，**不开新会话、不推送前端**（交由调用方决定，避免污染 `_handleSelectProject` 的显式选择）。
+   * 仅在「≥2 个项目 且 确有活动文件 且 归属另一个已打开项目 且 与当前 cwd 不同」时切换。
+   * @returns {Promise<boolean>} 是否发生了切换
+   */
+  async _relocateActiveProject(activeFsPath) {
+    try {
+      const folders = await this._resolveWorkspaceFolders();
+      if (folders.length < 2) return false; // 0/1 个项目无可切换
+      let fsPath = activeFsPath || '';
+      if (!fsPath) {
+        const editor = await this.hx.window.getActiveTextEditor();
+        fsPath = (editor && editor.document && editor.document.uri && editor.document.uri.fsPath) || '';
+      }
+      this.output.appendLine(`[router] _relocateActiveProject: activeFile=${fsPath || '(none)'} cwd=${this.cwd || '(empty)'} folders=[${folders.map((f) => f.path).join(', ')}]`);
+      if (!fsPath) return false; // 无活动文件（如聚焦在设置/欢迎页）：保持当前项目
+      const containing = this._folderContaining(folders, fsPath);
+      if (!containing) {
+        this.output.appendLine('[router] 活动文件不属于任何已打开项目，保持当前项目');
+        return false;
+      }
+      if (this._normPath(containing.path) === this._normPath(this.cwd)) return false; // 已是当前项目
+      this.cwd = containing.path;
+      this.projectName = containing.name;
+      this.output.appendLine(`[router] 定位活动文件所属项目 -> ${this.projectName} (${this.cwd})`);
+      return true;
+    } catch (e) {
+      this.output.appendLine(`[router] _relocateActiveProject 失败: ${e && e.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * 用户主动打开视图（状态栏图标 / Ctrl+Alt+C）时调用：把会话对焦到「当前正在编辑文件」所属项目。
+   * cwd 只在 init() 解析一次（IDE 启动那刻），之后切到别的项目编辑文件、再点图标/快捷键打开，
+   * 会话仍停在旧项目——本方法补上这步重新对焦。
+   * **仅在「没有进行中的会话」时定位**（`sessionId` 为空 = 新打开/新建会话的空白态）：
+   * 已在对话中再点图标只是想聚焦视图，不应切项目清会话；流式发送中(`_busy`)同样不动。
+   */
+  async syncProjectFromActiveEditor(activeFsPath) {
+    if (this._busy) { this.output.appendLine('[router] 打开视图：流式进行中，跳过项目定位'); return; }
+    if (this.sessionId) { this.output.appendLine('[router] 打开视图：已有进行中会话，仅聚焦不定位'); return; }
+    if (await this._relocateActiveProject(activeFsPath)) {
+      this._handleNewSession(); // 切到不同项目：历史按项目隔离，开新会话
+      this._emitProject();
+    }
+  }
+
+  /**
+   * 新建会话（前端 `create_new_session`：新建按钮 / /clear|/new|/reset / 切 provider / 删当前会话后）。
+   * 用户明确要求「新建会话时才定位项目」：先把 cwd 对焦到当前活动文件所属项目，再重置会话。
+   * 注意区别于底层原语 `_handleNewSession()`——后者还被 `_handleSelectProject` 调用，那条路径已显式选定项目，不可再定位。
+   */
+  async _handleNewSessionFromUser() {
+    this._handleNewSession(); // 先重置（clearMessages 即时下发，保持与前端 session transition 的原时序）
+    if (await this._relocateActiveProject()) {
+      this._emitProject(); // 项目变了才刷新顶部 chip
+    }
   }
 
   /**

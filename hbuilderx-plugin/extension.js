@@ -95,10 +95,21 @@ function activate(context) {
     }
   }
 
-  // 注册打开命令：聚焦到 CC GUI 视图
-  const openCmd = hx.commands.registerCommand('extension.ccgui.open', () => {
+  // 注册打开命令：聚焦到 CC GUI 视图，并把会话对焦到「当前正在编辑文件」所属项目。
+  // （cwd 只在 activate 时解析一次，故每次主动打开都补一次对焦，否则切了项目编辑文件后视图仍停在旧项目。）
+  const openCmd = hx.commands.registerCommand('extension.ccgui.open', async () => {
+    // 先抓当前活动文件路径，再 showView——showView 揭示 webview 可能改变「活动编辑器」，
+    // 故必须在揭示前捕获，否则后续 getActiveTextEditor 可能拿不到刚才在编辑的文件。
+    let activeFsPath = '';
+    try {
+      const editor = await hx.window.getActiveTextEditor();
+      activeFsPath = (editor && editor.document && editor.document.uri && editor.document.uri.fsPath) || '';
+    } catch (e) { /* ignore */ }
     try {
       hx.window.showView({ viewId: VIEW_ID, containerId: CONTAINER_ID });
+      if (router && typeof router.syncProjectFromActiveEditor === 'function') {
+        await router.syncProjectFromActiveEditor(activeFsPath);
+      }
     } catch (err) {
       output.appendLine(`[ccgui] showView 失败: ${err && err.message}`);
     }
