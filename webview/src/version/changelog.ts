@@ -13,6 +13,18 @@ export interface ChangelogEntry {
 
 export const CHANGELOG_DATA: ChangelogEntry[] = [
   {
+    version: '0.1.4',
+    date: '2026-06-23',
+    content: {
+      en: `🛠 Changes
+- Fix "Use CLI login info" doing nothing on click: the card now lights up as enabled, shows your logged-in account, and applies the auth immediately
+- Fix Node.js path / Claude CLI path / working directory failing to save under Settings → Basic Config → Environment`,
+      zh: `🛠 本次更新
+- 修复点击「使用 CLI 登录信息」无反应的问题：现可正常启用、显示登录账号，且鉴权即时生效
+- 修复「设置 → 基础配置 → 环境」中 Node.js 路径 / Claude CLI 路径 / 工作目录无法保存的问题`,
+    },
+  },
+  {
     version: '0.1.3',
     date: '2026-06-22',
     content: {

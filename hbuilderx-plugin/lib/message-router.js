@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { detectNode } = require('./node-detector');
+const { detectNode, resetCache: resetNodeCache } = require('./node-detector');
 const { AiBridgeClient } = require('./ai-bridge-client');
 const { processOutputLine } = require('./stream-adapter');
 const { ClaudeSessionAssembler } = require('./claude-session');
@@ -42,6 +42,12 @@ const LIST_FILES_SKIP_DIRS = new Set([
   'tmp', 'temp', 'logs', '.tmp', '.temp',
 ]);
 const LIST_FILES_SKIP_FILES = new Set(['.DS_Store', 'Thumbs.db', 'desktop.ini']);
+
+// ===== 特殊伪 provider id（不存于 providers 列表，代表运行模式而非具体供应商）=====
+// 与 webview SPECIAL_PROVIDER_IDS / IDEA ProviderManager / ai-bridge api-config 三方保持一致。
+const DISABLED_PROVIDER_ID = '__disabled__';
+const LOCAL_SETTINGS_PROVIDER_ID = '__local_settings_json__';
+const CLI_LOGIN_PROVIDER_ID = '__cli_login__';
 
 /**
  * 事件路由：把 webview 出站事件映射到 ai-bridge 调用，并把流式结果回灌前端。
@@ -159,17 +165,180 @@ class MessageRouter {
     }
   }
 
-  /** 带 isActive 标记的列表（前端 updateProviders 依赖 isActive 判定当前项）。 */
+  /**
+   * 带 isActive 标记的列表（前端 updateProviders 依赖 isActive 判定当前项）。
+   * 必须注入「本地 settings.json / 使用 CLI 登录信息」两张合成卡片（对齐 IDEA ProviderManager
+   * .getClaudeProviders 的 createLocalProviderObject/createCliLoginProviderObject）——它们是伪 provider，
+   * 不在 this.providers 里，但前端那两张特殊卡片靠列表中同 id 项的 isActive 来点亮「已启用」。
+   * 缺了它们，点「授权并启用」后卡片永远停在未启用态，表现为「点了没反应」。
+   */
   _providerListForUi() {
-    return this.providers.map((p) => ({ ...p, isActive: p.id === this.activeProviderId }));
+    const list = this.providers.map((p) => ({ ...p, isActive: p.id === this.activeProviderId }));
+    list.unshift(
+      { id: LOCAL_SETTINGS_PROVIDER_ID, name: 'Local settings.json', isActive: this.activeProviderId === LOCAL_SETTINGS_PROVIDER_ID, isLocalProvider: true },
+      { id: CLI_LOGIN_PROVIDER_ID, name: 'CLI Login', isActive: this.activeProviderId === CLI_LOGIN_PROVIDER_ID, isCliLoginProvider: true },
+    );
+    return list;
   }
 
   _emitProviders() {
-    this.bridge.callJs('updateProviders', JSON.stringify(this._providerListForUi()));
-    const active = this._activeProvider();
+    const list = this._providerListForUi();
+    this.bridge.callJs('updateProviders', JSON.stringify(list));
+    const active = list.find((p) => p.isActive);
     if (active) {
-      this.bridge.callJs('updateActiveProvider', JSON.stringify({ ...active, isActive: true }));
+      this.bridge.callJs('updateActiveProvider', JSON.stringify(active));
     }
+    // CLI 登录模式：回显账号邮箱（前端 ProviderList 仅在该卡片激活时显示）
+    if (this.activeProviderId === CLI_LOGIN_PROVIDER_ID) {
+      const email = this._readCliLoginEmail();
+      if (email) this.bridge.callJs('updateCliLoginAccountInfo', email);
+    }
+  }
+
+  /** 从 ~/.claude.json 读取 OAuth 账号邮箱（仅取安全展示字段，绝不读凭据）。对齐 IDEA readCliLoginAccountInfo。 */
+  _readCliLoginEmail() {
+    try {
+      const file = path.join(os.homedir(), '.claude.json');
+      const obj = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      const acc = obj && obj.oauthAccount;
+      if (acc && typeof acc.emailAddress === 'string' && acc.emailAddress) return acc.emailAddress;
+    } catch (e) { /* 文件不存在/坏 JSON：未登录，返回 null */ }
+    return null;
+  }
+
+  /**
+   * 切换 provider（含特殊伪 id：__disabled__ / __local_settings_json__ / __cli_login__）。
+   * 关键：切换鉴权模式/凭据后，daemon 中按 signature 复用的 SDK runtime 仍持旧凭据
+   * （signature 不含鉴权状态），必须丢弃全部 runtime，下一条消息才会用新模式
+   * （对齐 IDEA handleSwitchProvider 的 shutdownDaemon 意图，但用更轻量的 resetRuntime）。
+   */
+  async _handleSwitchProvider(content) {
+    let d;
+    try { d = JSON.parse(content); } catch (e) { return; }
+    const id = (d && d.id) || '';
+    this.activeProviderId = id;
+    this._persistProviders();
+    await this._refreshClaudeRuntimes();
+    this._emitProviders();
+    this.bridge.callJs('showSwitchSuccess', this._switchSuccessMessage(id));
+  }
+
+  /** provider 切换成功的提示文案（HBuilderX 宿主无 i18n，fork 默认中文）。 */
+  _switchSuccessMessage(id) {
+    if (id === CLI_LOGIN_PROVIDER_ID) return '已启用「使用 CLI 登录信息」';
+    if (id === LOCAL_SETTINGS_PROVIDER_ID) return '已启用本地 settings.json';
+    if (!id || id === DISABLED_PROVIDER_ID) return '已停用所有供应商';
+    const p = this.providers.find((x) => x.id === id);
+    return p ? `已切换到「${p.name}」` : '已切换供应商';
+  }
+
+  /** 丢弃 daemon 内全部 SDK runtime，使鉴权/凭据变更在下一条消息立即生效（不重启 daemon）。 */
+  async _refreshClaudeRuntimes() {
+    if (!this.aiBridge || !this.aiBridge.proc) return;
+    try {
+      await this.aiBridge.request('claude.resetRuntime', {});
+    } catch (e) {
+      this.output.appendLine(`[router] resetRuntime 失败（将于下次发送重建）: ${e && e.message}`);
+    }
+  }
+
+  /** ai-bridge daemon 的额外环境变量（权限 IPC + 用户自定义 Claude CLI 路径）。 */
+  _bridgeExtraEnv() {
+    const env = { ...this.permission.env() };
+    const cliPath = (this._prefs.claudeCliPath || '').trim();
+    if (cliPath) env.CLAUDE_CODE_PATH = cliPath; // ai-bridge getClaudeCliPathOverride() 读取 → SDK pathToClaudeCodeExecutable
+    return env;
+  }
+
+  /** HBuilderX 配置代理：让 node-detector 的 ccgui.nodePath 优先取「环境」tab 保存的覆盖值。 */
+  _nodeConfig() {
+    const hxConfig = (() => { try { return this.hx.workspace.getConfiguration(); } catch (e) { return null; } })();
+    const override = (this._prefs.nodePath || '').trim();
+    return {
+      get: (key) => {
+        if (key === 'ccgui.nodePath' && override) return override;
+        return hxConfig && hxConfig.get ? hxConfig.get(key) : undefined;
+      },
+    };
+  }
+
+  /** 探测 Node 完整版本字符串（如 "v18.20.0"，失败返回 null）。 */
+  _probeNodeVersion(nodePath) {
+    try {
+      return require('child_process').execFileSync(nodePath, ['-v'], { encoding: 'utf8', timeout: 4000 }).trim();
+    } catch (e) { return null; }
+  }
+
+  /**
+   * 用当前 nodeInfo.path + extraEnv 重启 ai-bridge daemon。
+   * 改 Node 路径（换二进制）或 Claude CLI 路径（CLAUDE_CODE_PATH 在 spawn 时固化）后必须整体重启。
+   */
+  async _restartBridge() {
+    if (!this.nodeInfo || !this.nodeInfo.path) return;
+    try { if (this.aiBridge) this.aiBridge.dispose(); } catch (e) { /* ignore */ }
+    this.aiBridge = new AiBridgeClient(this.nodeInfo.path, this.output, undefined, this._bridgeExtraEnv());
+    try {
+      await this.aiBridge.start();
+    } catch (err) {
+      this.output.appendLine(`[router] 重启 ai-bridge 失败: ${err && err.message}`);
+      this.bridge.callJs('addErrorMessage', `ai-bridge 重启失败: ${err && err.message}`);
+    }
+  }
+
+  // ===== 设置 → 基础配置 → 环境（Node 路径 / Claude CLI 路径 / 工作目录）=====
+  // 原 HBuilderX 移植版漏实现这 6 个 case → 全落 default「暂未处理」→ 三个保存按钮点了无效（用户反馈「环境设置保存不了」）。
+
+  _envNodePayload() {
+    return {
+      path: (this._prefs.nodePath || '').trim(), // 用户覆盖值（空=自动探测）
+      version: this.nodeInfo ? this._probeNodeVersion(this.nodeInfo.path) : null, // 当前生效 Node 版本
+      minVersion: 18,
+    };
+  }
+
+  _handleGetNodePath() {
+    this.bridge.callJs('updateNodePath', JSON.stringify(this._envNodePayload()));
+  }
+
+  async _handleSetNodePath(content) {
+    let d = {};
+    try { d = JSON.parse(content) || {}; } catch (e) { d = {}; }
+    const next = typeof d.path === 'string' ? d.path.trim() : '';
+    this._persist({ nodePath: next });
+    // 重新探测（尊重新覆盖值），并重启 daemon 使新 Node 立即生效
+    resetNodeCache();
+    const detected = detectNode(this._nodeConfig(), { execPath: process.execPath, force: true });
+    if (detected) this.nodeInfo = detected;
+    this.bridge.callJs('nodeEnvironmentStatus', JSON.stringify(this._nodeEnvPayload()));
+    await this._restartBridge();
+    this._handleGetNodePath();
+  }
+
+  _handleGetClaudeCliPath() {
+    this.bridge.callJs('updateClaudeCliPath', JSON.stringify({ path: (this._prefs.claudeCliPath || '').trim() }));
+  }
+
+  async _handleSetClaudeCliPath(content) {
+    let d = {};
+    try { d = JSON.parse(content) || {}; } catch (e) { d = {}; }
+    const next = typeof d.path === 'string' ? d.path.trim() : '';
+    this._persist({ claudeCliPath: next });
+    // CLAUDE_CODE_PATH 在 daemon spawn 时固化，必须重启才能让 SDK 用新的 CLI 二进制
+    await this._restartBridge();
+    this._handleGetClaudeCliPath();
+  }
+
+  _handleGetWorkingDirectory() {
+    this.bridge.callJs('updateWorkingDirectory', JSON.stringify({ customWorkingDir: (this._prefs.customWorkingDir || '').trim() }));
+  }
+
+  _handleSetWorkingDirectory(content) {
+    let d = {};
+    try { d = JSON.parse(content) || {}; } catch (e) { d = {}; }
+    const next = typeof d.customWorkingDir === 'string' ? d.customWorkingDir.trim() : '';
+    this._persist({ customWorkingDir: next });
+    // 无需重启 daemon：工作目录是 per-request 的 params.cwd（见 _handleSend）
+    this._handleGetWorkingDirectory();
   }
 
   _persistProviders() {
@@ -386,9 +555,8 @@ class MessageRouter {
     this.cwd = await this._resolveCwd();
     this.output.appendLine(`[router] cwd=${this.cwd || '(empty!)'}`);
 
-    const config = (() => { try { return this.hx.workspace.getConfiguration(); } catch (e) { return null; } })();
-    // 优先 HBuilderX 内置 Node（process.execPath），见 node-detector 优先级说明
-    this.nodeInfo = detectNode(config, { execPath: process.execPath });
+    // 优先级：环境 tab 保存的 nodePath 覆盖（经 _nodeConfig 注入）> HBuilderX 内置 Node（execPath）
+    this.nodeInfo = detectNode(this._nodeConfig(), { execPath: process.execPath });
     if (!this.nodeInfo) {
       this.output.appendLine('[router] 未找到可用 Node.js，无法启动 ai-bridge');
       this.bridge.callJs('nodeEnvironmentStatus', JSON.stringify(this._nodeEnvPayload()));
@@ -406,8 +574,8 @@ class MessageRouter {
       this.bridge.callJs('nodeEnvironmentStatus', JSON.stringify(this._nodeEnvPayload()));
     }
 
-    // 权限桥接 env 必须在 spawn 前注入；provider 的 key/baseURL 走 ~/.codemoss/config.json（setupApiKey 每次发送读取）
-    this.aiBridge = new AiBridgeClient(this.nodeInfo.path, this.output, undefined, this.permission.env());
+    // 权限桥接 env + 自定义 Claude CLI 路径必须在 spawn 前注入；provider 的 key/baseURL 走 ~/.codemoss/config.json（setupApiKey 每次发送读取）
+    this.aiBridge = new AiBridgeClient(this.nodeInfo.path, this.output, undefined, this._bridgeExtraEnv());
     // 启动时同步一次 provider 配置到 ~/.codemoss/config.json
     this._syncCodemossConfig();
     try {
@@ -530,8 +698,12 @@ class MessageRouter {
         this._emitProviders();
         break;
       case 'get_active_provider': {
-        const active = this._activeProvider();
-        if (active) this.bridge.callJs('updateActiveProvider', JSON.stringify({ ...active, isActive: true }));
+        const active = this._providerListForUi().find((p) => p.isActive);
+        if (active) this.bridge.callJs('updateActiveProvider', JSON.stringify(active));
+        if (this.activeProviderId === CLI_LOGIN_PROVIDER_ID) {
+          const email = this._readCliLoginEmail();
+          if (email) this.bridge.callJs('updateCliLoginAccountInfo', email);
+        }
         break;
       }
       case 'add_provider': {
@@ -564,14 +736,9 @@ class MessageRouter {
         this._emitProviders();
         break;
       }
-      case 'switch_provider': {
-        let d;
-        try { d = JSON.parse(content); } catch (e) { break; }
-        this.activeProviderId = (d && d.id) || '';
-        this._persistProviders();
-        this._emitProviders();
+      case 'switch_provider':
+        this._handleSwitchProvider(content);
         break;
-      }
       case 'sort_providers': {
         let d;
         try { d = JSON.parse(content); } catch (e) { break; }
@@ -586,6 +753,25 @@ class MessageRouter {
         }
         break;
       }
+      // ===== 设置 → 基础配置 → 环境 =====
+      case 'get_node_path':
+        this._handleGetNodePath();
+        break;
+      case 'set_node_path':
+        this._handleSetNodePath(content);
+        break;
+      case 'get_claude_cli_path':
+        this._handleGetClaudeCliPath();
+        break;
+      case 'set_claude_cli_path':
+        this._handleSetClaudeCliPath(content);
+        break;
+      case 'get_working_directory':
+        this._handleGetWorkingDirectory();
+        break;
+      case 'set_working_directory':
+        this._handleSetWorkingDirectory(content);
+        break;
       case 'refresh_slash_commands':
         this.bridge.callJs('updateSlashCommands', JSON.stringify(this._builtinSlashCommands()));
         break;
@@ -1178,10 +1364,14 @@ class MessageRouter {
 
     this.assembler.addUserMessage(text);
 
+    // 「环境」tab 的自定义工作目录覆盖：显式设置且目录存在时优先于项目 cwd
+    const customWd = (this._prefs.customWorkingDir || '').trim();
+    const effectiveCwd = (customWd && fs.existsSync(customWd)) ? customWd : this.cwd;
+
     const params = {
       message: text,
       sessionId: this.sessionId || '',
-      cwd: this.cwd,
+      cwd: effectiveCwd,
       permissionMode: payload.permissionMode || this.permissionMode,
       // 激活 provider 指定了主模型（如 DeepSeek 的 ANTHROPIC_MODEL）时优先用它；否则用 UI 选择
       model: this._activeProviderModel() || this.model || '',
