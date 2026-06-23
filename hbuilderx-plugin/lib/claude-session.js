@@ -12,6 +12,60 @@
  * 真机联调时若出现重复再补。
  */
 
+/**
+ * 模型上下文窗口（tokens）。复刻 IDEA ModelProviderHandler.MODEL_CONTEXT_LIMITS，
+ * 用于把每轮 usage 换算成「上下文用量百分比」。未列出的模型默认 200k。
+ */
+const MODEL_CONTEXT_LIMITS = {
+  'claude-sonnet-4-6': 200000,
+  'claude-fable-5': 200000,
+  'claude-opus-4-8': 200000,
+  'claude-opus-4-7': 200000,
+  'claude-opus-4-6': 200000,
+  'claude-sonnet-4-6[1m]': 1000000,
+  'claude-fable-5[1m]': 1000000,
+  'claude-opus-4-8[1m]': 1000000,
+  'claude-opus-4-7[1m]': 1000000,
+  'claude-opus-4-6[1m]': 1000000,
+  'claude-haiku-4-5': 200000,
+  'gpt-5.4': 1000000,
+  'gpt-5.4-mini': 400000,
+  'gpt-5.3-codex': 258000,
+  'gpt-5.2-codex': 258000,
+  'gpt-5.2': 258000,
+  'gpt-5.1': 128000,
+  'gpt-5.1-codex': 128000,
+  'gpt-4o': 128000,
+  'gpt-4o-mini': 128000,
+  'gpt-4-turbo': 128000,
+  'gpt-4': 8192,
+  'o3': 200000,
+  'o3-mini': 200000,
+  'o1': 200000,
+  'o1-mini': 128000,
+  'o1-preview': 128000,
+};
+
+/**
+ * 解析模型的上下文窗口大小（tokens）。复刻 IDEA ModelProviderHandler.getModelContextLimit：
+ * 优先识别形如 `xxx[1m]` / `xxx[200k]` 的容量后缀，否则查表，默认 200000。
+ * @param {string} model
+ * @returns {number}
+ */
+function getModelContextLimit(model) {
+  if (!model) return 200000;
+  const m = /\s*\[([0-9.]+)([kKmM])\]\s*$/.exec(model);
+  if (m) {
+    const value = parseFloat(m[1]);
+    const unit = m[2].toLowerCase();
+    if (!isNaN(value)) {
+      if (unit === 'm') return Math.round(value * 1000000);
+      if (unit === 'k') return Math.round(value * 1000);
+    }
+  }
+  return MODEL_CONTEXT_LIMITS[model] != null ? MODEL_CONTEXT_LIMITS[model] : 200000;
+}
+
 class ClaudeSessionAssembler {
   /**
    * @param {{ callJs: (fn: string, ...args: any[]) => void }} jsTarget
@@ -34,6 +88,9 @@ class ClaudeSessionAssembler {
     this.thinkingSegmentActive = false;
     this.sessionId = '';
     this._seq = 0;
+    // 上下文用量：当前模型（决定上下文窗口）+ 最近一次累计 tokens（用于模型切换时按新窗口重算）
+    this.currentModel = '';
+    this.lastUsedTokens = 0;
   }
 
   /** 追加一条用户消息（本地回显，发送前调用）。 */
@@ -161,14 +218,42 @@ class ClaudeSessionAssembler {
     this.js.callJs('setSessionId', id);
   }
 
+  /** 设置当前模型（决定上下文窗口）。发送前由 router 调用，使 usage 百分比按正确窗口换算。 */
+  setModel(model) {
+    this.currentModel = model || '';
+  }
+
+  /**
+   * 模型切换后按新上下文窗口重算并推送一次用量（对齐 IDEA pushUsageUpdateAfterModelChange）：
+   * 切到 `[1m]` 等大窗口模型时，已用 tokens 不变但百分比应随之下降，无需等下一条消息。
+   */
+  pushUsageForModel(model) {
+    this.currentModel = model || '';
+    this._emitUsage(this.lastUsedTokens);
+  }
+
   _handleUsage(jsonStr) {
     try {
       const usage = JSON.parse(jsonStr);
+      // Claude 口径：input + output + cache_read + cache_creation（对齐 IDEA TokenUsageUtils.extractUsedTokens）
       const used = (usage.input_tokens || 0) + (usage.output_tokens || 0)
         + (usage.cache_read_input_tokens || 0) + (usage.cache_creation_input_tokens || 0);
-      // maxTokens 未知时给 0，前端按 0 处理百分比
-      this.js.callJs('onUsageUpdate', JSON.stringify({ percentage: 0, usedTokens: used, maxTokens: 0 }));
+      this._emitUsage(used);
     } catch (e) { /* ignore */ }
+  }
+
+  /** 按当前模型上下文窗口换算百分比并下发 onUsageUpdate（百分比由宿主计算，前端直接显示）。 */
+  _emitUsage(usedTokens) {
+    this.lastUsedTokens = usedTokens || 0;
+    const maxTokens = getModelContextLimit(this.currentModel);
+    const percentage = maxTokens > 0 ? Math.min(100, Math.round((this.lastUsedTokens * 100) / maxTokens)) : 0;
+    this.js.callJs('onUsageUpdate', JSON.stringify({
+      percentage,
+      usedTokens: this.lastUsedTokens,
+      totalTokens: this.lastUsedTokens,
+      maxTokens,
+      limit: maxTokens,
+    }));
   }
 
   _handleAssistantMessage(jsonStr) {

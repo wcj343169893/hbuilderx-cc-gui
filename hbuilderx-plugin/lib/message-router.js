@@ -638,6 +638,8 @@ class MessageRouter {
         this.model = content || '';
         this._persist({ model: this.model });
         this.bridge.callJs('onModelConfirmed', this.model, this.provider);
+        // 模型变更后按新上下文窗口立即重算用量百分比（不必等下一条消息）
+        this.assembler.pushUsageForModel(this._activeProviderModel() || this.model);
         break;
       case 'set_mode':
         this.permissionMode = content || this.permissionMode;
@@ -1381,6 +1383,9 @@ class MessageRouter {
       disableThinking: false,
       reasoningEffort: payload.reasoningEffort || null,
     };
+
+    // 告知装配器本轮生效模型，使 [USAGE] 能按该模型上下文窗口换算百分比
+    this.assembler.setModel(params.model);
 
     const state = {};
     const onLine = (line) => {

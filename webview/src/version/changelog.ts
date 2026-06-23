@@ -13,6 +13,16 @@ export interface ChangelogEntry {
 
 export const CHANGELOG_DATA: ChangelogEntry[] = [
   {
+    version: '0.1.5',
+    date: '2026-06-23',
+    content: {
+      en: `🛠 Changes
+- Fix the chat "context usage" always showing 0%: it now computes and shows the real percentage based on the current model's context window (e.g. 200K / 1M), and updates immediately when you switch models`,
+      zh: `🛠 本次更新
+- 修复聊天时「上下文用量」一直显示 0% 的问题：现已按当前模型的上下文窗口（如 200K / 1M）正确计算并显示百分比，切换模型时也会立即刷新`,
+    },
+  },
+  {
     version: '0.1.4',
     date: '2026-06-23',
     content: {
