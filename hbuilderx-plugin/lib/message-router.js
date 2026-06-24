@@ -11,6 +11,7 @@ const { PermissionBridge } = require('./permission-bridge');
 const { resolveTheme } = require('./webview-host');
 const prefs = require('./prefs');
 const skillsService = require('./skills-service');
+const uniAgentSkillsInstaller = require('./uni-agent-skills-installer');
 const historyService = require('./history-service');
 const agentService = require('./agent-service');
 const mcpService = require('./mcp-service');
@@ -588,6 +589,20 @@ class MessageRouter {
 
     // 注册 IDE 主题变更监听，切换配色时主动推送给前端（Follow IDE 模式实时跟随）
     this._registerThemeListener();
+
+    // 预置 HBuilderX 官方 uni-agent 技能（转换占位符→具体路径后写入「停用」目录，用户在面板一键开）。
+    // best-effort：失败不影响插件启动。
+    try {
+      const r = uniAgentSkillsInstaller.ensureOfficialSkillsInstalled({
+        pluginRoot: path.join(__dirname, '..'),
+        output: this.output,
+        prefs: this._prefs,
+        persist: (partial) => this._persist(partial),
+      });
+      if (r && r.installed > 0) this.output.appendLine(`[router] 已预置官方技能 ${r.installed} 个`);
+    } catch (e) {
+      this.output.appendLine(`[router] 预置官方技能失败: ${e && e.message}`);
+    }
   }
 
   /** 启动后向前端推送初始状态，使聊天界面可用。 */
@@ -1401,6 +1416,15 @@ class MessageRouter {
 
     this.output.appendLine(`[router] send: model=${params.model || '(default)'} mode=${params.permissionMode} cwd=${params.cwd || '(empty!)'}`);
     this._busy = true;
+    // 流式保活心跳：工具执行 / 等待授权期间，daemon 在 tool_use 与 tool_result 之间
+    // 对 stdout 完全静默（无 delta / [MESSAGE] / [TOOL_RESULT]）。前端 stall 看门狗
+    // （60s 无活动即判定 onStreamEnd 丢失）会误判而强制结束 → 倒计时提前停止、后续
+    // delta 被丢弃，用户误以为已执行完。IDEA 版靠 StreamMessageCoalescer 周期重推保活，
+    // 本移植版缺失，故在此周期下发 onStreamingHeartbeat 刷新前端 __lastStreamActivityAt。
+    // daemon 进程崩溃由 AiBridgeClient 的 proc.on('exit') resolve 未决请求兜底，不依赖看门狗。
+    const heartbeat = setInterval(() => {
+      try { this.bridge.callJs('onStreamingHeartbeat'); } catch (e) { /* ignore */ }
+    }, 10000);
     try {
       const result = await this.aiBridge.request('claude.send', params, onLine);
       this.output.appendLine(`[router] send 完成: success=${result.success} error=${result.error || '(none)'} lastNodeError=${state.lastNodeError || '(none)'}`);
@@ -1412,6 +1436,7 @@ class MessageRouter {
     } catch (err) {
       this.assembler.onError(err && err.message ? err.message : String(err));
     } finally {
+      clearInterval(heartbeat);
       this._busy = false;
     }
   }

@@ -13,6 +13,24 @@ export interface ChangelogEntry {
 
 export const CHANGELOG_DATA: ChangelogEntry[] = [
   {
+    version: '0.1.7',
+    date: '2026-06-25',
+    content: {
+      en: `✨ New
+- Bundled the official HBuilderX uni-app x skills (23 in total: runtime screenshots, console logcat, syntax / compile checks, component usage, best practices, and more). Enable any of them with one click in the Skills panel to use them in chat (requires HBuilderX installed)
+
+🛠 Fixes
+- Fix the elapsed-time counter stopping early while files are being edited / commands are running, which made it look like the AI had already finished
+- Fix the follow-up question bubble jumping above the previous turn's thinking (a side effect of the issue above)`,
+      zh: `✨ 新增
+- 内置 HBuilderX 官方 uni-app x 技能（共 23 个：运行截图、控制台日志、语法 / 编译检查、组件用法、最佳实践等），在「技能」面板一键启用即可在对话中调用（需已安装 HBuilderX）
+
+🛠 修复
+- 修复修改文件 / 执行命令期间，计时提前停止、让人误以为 AI 已执行完毕的问题
+- 修复由上述问题连带导致的：新提问气泡跑到上一轮思考过程上方`,
+    },
+  },
+  {
     version: '0.1.6',
     date: '2026-06-24',
     content: {

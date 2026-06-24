@@ -173,6 +173,9 @@ class ClaudeSessionAssembler {
     this._resetSegments();
     this._pushMessages();
     this.js.callJs('onStreamEnd', String(++this._seq));
+    // daemon 每轮只发一次 STREAM_END（整轮工具循环跑完、收到 result 后），此时工具结果
+    // 均已返回，停掉倒计时即正确时机。工具执行/等待授权期间的「倒计时保活」由
+    // message-router 的 onStreamingHeartbeat 心跳负责，不在此处延后停倒计时。
     this.js.callJs('showLoading', 'false');
   }
 
