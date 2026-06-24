@@ -43,14 +43,21 @@ function resolveSourceUniAgentDir() {
   return null;
 }
 
+// 排除目录：插件运行时配置样例（uni-config-center 含占位证书/密钥，属 uni-pay/uni-id 样例，
+// 非 find-matching-plugin 技能内容；技能只引用各 {plugin}/LLM.md）。
+const EXCLUDE_DIR_NAMES = new Set(['.git', '.DS_Store', 'uni-config-center']);
+// 排除文件扩展：证书/密钥（兜底，避免任何示例密钥进仓库 / 触发密钥扫描）。
+const EXCLUDE_FILE_EXT = new Set(['.p12', '.pem', '.key', '.crt', '.p8']);
+
 function copyDir(src, dest) {
   fs.mkdirSync(dest, { recursive: true });
   for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
-    if (entry.name === '.git' || entry.name === '.DS_Store') continue;
+    if (EXCLUDE_DIR_NAMES.has(entry.name)) continue;
     const s = path.join(src, entry.name);
     const d = path.join(dest, entry.name);
-    if (entry.isDirectory()) copyDir(s, d);
-    else fs.copyFileSync(s, d);
+    if (entry.isDirectory()) { copyDir(s, d); continue; }
+    if (EXCLUDE_FILE_EXT.has(path.extname(entry.name).toLowerCase())) continue;
+    fs.copyFileSync(s, d);
   }
 }
 
