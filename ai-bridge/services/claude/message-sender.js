@@ -73,6 +73,10 @@ function buildQueryOptions({ workingDirectory, permissionMode, sdkModelName, max
   return {
     cwd: workingDirectory,
     permissionMode,
+    // SDK 0.3.x 要求：用 'bypassPermissions'（前端「自动模式」）时必须同时把
+    // allowDangerouslySkipPermissions 设为 true，否则 CLI 不会真正 bypass，
+    // 仍会对 Write/Edit/Bash 回调 canUseTool → 弹权限框（即「自动模式仍要授权」）。
+    ...(permissionMode === 'bypassPermissions' && { allowDangerouslySkipPermissions: true }),
     model: sdkModelName,
     maxTurns: 100,
     enableFileCheckpointing: true,

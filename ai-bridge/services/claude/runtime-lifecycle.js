@@ -24,7 +24,11 @@ export function buildRuntimeSignature(options, systemPromptAppend, streamingEnab
     streamingEnabled: !!streamingEnabled,
     runtimeSessionEpoch: runtimeSessionEpoch || '',
     model: options.model || '',
-    effort: options.effort || ''
+    effort: options.effort || '',
+    // permissionMode 一般可用 setPermissionMode 动态切换，故不入签名；唯独 bypassPermissions
+    // 依赖 spawn 时的 --allow-dangerously-skip-permissions 标志（无法事后补），所以把该标志
+    // 纳入签名：进/出「自动模式」时签名变化 → 重建 runtime，确保 spawn 标志与当前模式一致。
+    allowDangerouslySkipPermissions: !!options.allowDangerouslySkipPermissions
   };
   return JSON.stringify(material);
 }

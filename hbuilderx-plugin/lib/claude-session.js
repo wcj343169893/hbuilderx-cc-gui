@@ -95,8 +95,24 @@ class ClaudeSessionAssembler {
 
   /** 追加一条用户消息（本地回显，发送前调用）。 */
   addUserMessage(text) {
+    // 新一轮对话开始：先复位上一轮的单轮累积态，否则本轮回复会并入上一条助手气泡
+    // （气泡位于新问题之前）。对齐 IDEA SessionSendService 每轮 new ClaudeMessageHandler 的语义。
+    this._beginTurn();
     this.messages.push({ type: 'user', content: text, timestamp: Date.now(), raw: null });
     this._pushMessages();
+  }
+
+  /**
+   * 复位「单轮级」状态：当前助手气泡引用、累积文本、思考态、段落标志。
+   * 不动「会话级」状态（messages 列表 / sessionId / 用量 / 模型），故历史消息与上下文保留。
+   * 移植说明：IDEA 版每次 sendToClaude 都 new 一个 ClaudeMessageHandler，currentAssistantMessage
+   * 天生每轮从 null 开始；本装配器是跨轮复用的单例，必须在轮次边界显式复位。
+   */
+  _beginTurn() {
+    this.currentAssistant = null;
+    this.assistantContent = '';
+    this.isThinking = false;
+    this._resetSegments();
   }
 
   // ===== 入口：处理 stream-adapter 上报的事件 =====

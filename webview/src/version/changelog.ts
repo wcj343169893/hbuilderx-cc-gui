@@ -13,6 +13,18 @@ export interface ChangelogEntry {
 
 export const CHANGELOG_DATA: ChangelogEntry[] = [
   {
+    version: '0.1.6',
+    date: '2026-06-24',
+    content: {
+      en: `🛠 Changes
+- Fix "Auto Mode" still asking for permission on file writes / commands in the current project: it now truly bypasses approvals and runs automatically, no per-operation confirmation
+- Fix follow-up questions in the same session having their reply merged into the previous answer bubble; each turn now renders as its own message`,
+      zh: `🛠 本次更新
+- 修复「自动模式」下对当前项目的写入 / 命令操作仍弹出授权确认的问题：现已真正自动放行，无需逐次确认
+- 修复同一会话中连续追问时，AI 新回复并入上一条回答气泡的问题；现在每轮各自独立成条`,
+    },
+  },
+  {
     version: '0.1.5',
     date: '2026-06-23',
     content: {
