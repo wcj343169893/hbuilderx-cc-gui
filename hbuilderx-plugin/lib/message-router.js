@@ -897,6 +897,16 @@ class MessageRouter {
       case 'get_ide_theme':
         this._handleGetIdeTheme();
         break;
+      // ===== 查看差异（Diff）=====
+      // 前端工具卡片的「查看差异」按钮发 show_diff（及编辑预览等变体）。IDEA 版用 DiffManager
+      // 打开原生对比视图；HBuilderX 无任意文本的原生 diff API，故落地为「把 before/after 写成
+      // 临时文件并各开一个编辑器 tab」供肉眼对比（保留扩展名以获得语法高亮）。
+      case 'show_diff':
+      case 'show_edit_full_diff':
+      case 'show_multi_edit_diff':
+      case 'show_edit_preview_diff':
+        this._handleShowDiff(event, content);
+        break;
       // ===== 历史会话（History）=====
       case 'load_history_data':
         this._handleLoadHistoryData(content);
@@ -1487,6 +1497,117 @@ class MessageRouter {
     if (path.isAbsolute(normalized)) return normalized;
     if (!this.cwd) return null; // 无项目根，相对路径无法可靠解析
     return path.resolve(this.cwd, normalized);
+  }
+
+  /**
+   * 「查看差异」：把 before/after 两段文本写成临时文件并各开一个编辑器 tab 供对比。
+   * 移植自 IDEA SimpleDiffDisplayHandler（show_diff / show_edit_full_diff / show_multi_edit_diff /
+   * show_edit_preview_diff），但 HBuilderX 无原生 diff 视图 API，改为临时文件并排打开。
+   * @param {string} type 事件名
+   * @param {string} content JSON 载荷
+   */
+  _handleShowDiff(type, content) {
+    let json = {};
+    try { json = JSON.parse(content || '{}') || {}; } catch (e) {
+      this.output.appendLine(`[router] ${type} 载荷解析失败: ${e && e.message}`);
+      return;
+    }
+    const filePath = json.filePath || '';
+    let before = '';
+    let after = '';
+    try {
+      if (type === 'show_diff') {
+        // EditToolBlock 直接传 old/new 内容（可能是片段，也可能是整文件）
+        before = json.oldContent != null ? json.oldContent : '';
+        after = json.newContent != null ? json.newContent : '';
+      } else if (type === 'show_edit_full_diff') {
+        const oldString = json.oldString || '';
+        const newString = json.newString || '';
+        if (json.originalContent != null && json.originalContent !== '') {
+          before = json.originalContent;
+          after = this._applyEdits(before, [{ oldString, newString, replaceAll: !!json.replaceAll }]);
+        } else {
+          before = oldString;
+          after = newString;
+        }
+      } else if (type === 'show_edit_preview_diff') {
+        // 以当前磁盘内容为「前」，依次套用 edits 得到「后」
+        const abs = this._resolveAbsPath(filePath);
+        before = (abs && fs.existsSync(abs)) ? fs.readFileSync(abs, 'utf-8') : '';
+        after = this._applyEdits(before, this._normalizeEdits(json.edits));
+      } else if (type === 'show_multi_edit_diff') {
+        // currentContent（或磁盘内容）为「后」，反向套用 edits 复原「前」
+        const abs = this._resolveAbsPath(filePath);
+        after = json.currentContent != null ? json.currentContent
+          : ((abs && fs.existsSync(abs)) ? fs.readFileSync(abs, 'utf-8') : '');
+        const edits = this._normalizeEdits(json.edits);
+        before = this._applyEdits(after, edits.slice().reverse().map((e) => ({
+          oldString: e.newString, newString: e.oldString, replaceAll: e.replaceAll,
+        })));
+      }
+    } catch (e) {
+      this.output.appendLine(`[router] ${type} 计算 before/after 失败: ${e && e.message}`);
+    }
+    this._openDiffTempFiles(filePath, before, after, json.title);
+  }
+
+  /** 顺序套用 edits（{oldString,newString,replaceAll}）到 content，返回结果。 */
+  _applyEdits(content, edits) {
+    let out = content == null ? '' : String(content);
+    for (const e of (Array.isArray(edits) ? edits : [])) {
+      const oldStr = e.oldString || '';
+      const newStr = e.newString || '';
+      if (!oldStr) continue;
+      if (e.replaceAll) {
+        out = out.split(oldStr).join(newStr);
+      } else {
+        const idx = out.indexOf(oldStr);
+        if (idx >= 0) out = out.slice(0, idx) + newStr + out.slice(idx + oldStr.length);
+      }
+    }
+    return out;
+  }
+
+  /** 把前端 edits 数组归一为 {oldString,newString,replaceAll}。 */
+  _normalizeEdits(edits) {
+    if (!Array.isArray(edits)) return [];
+    return edits.map((e) => ({
+      oldString: (e && (e.oldString != null ? e.oldString : e.old_string)) || '',
+      newString: (e && (e.newString != null ? e.newString : e.new_string)) || '',
+      replaceAll: !!(e && (e.replaceAll || e.replace_all)),
+    }));
+  }
+
+  /**
+   * 把 before/after 写入临时文件并各开一个编辑器 tab。保留原文件扩展名以获得语法高亮。
+   * HBuilderX 无原生对比视图，故只能并排打开两个 tab（≈ IDEA DiffManager 的退化版）。
+   */
+  _openDiffTempFiles(filePath, before, after, title) {
+    try {
+      const tmpDir = path.join(os.tmpdir(), 'cc-gui-diff');
+      fs.mkdirSync(tmpDir, { recursive: true });
+      const ext = path.extname(filePath || '') || '.txt';
+      const rawBase = path.basename(filePath || 'file', ext) || 'file';
+      const safeBase = rawBase.replace(/[^\w.\-]+/g, '_') || 'file';
+      const beforePath = path.join(tmpDir, `${safeBase}.before${ext}`);
+      const afterPath = path.join(tmpDir, `${safeBase}.after${ext}`);
+      fs.writeFileSync(beforePath, before == null ? '' : String(before), 'utf-8');
+      fs.writeFileSync(afterPath, after == null ? '' : String(after), 'utf-8');
+
+      // 先开「前」，再开「后」（后开者获得焦点）。openTextDocument 返回 Promise。
+      Promise.resolve(this.hx.window.openTextDocument(beforePath))
+        .then(() => this.hx.window.openTextDocument(afterPath))
+        .then(() => {
+          this.output.appendLine(`[router] show_diff 已打开对比临时文件: ${safeBase}${ext}`);
+          try {
+            const name = title || `${safeBase}${ext}`;
+            this.hx.window.setStatusBarMessage(`已打开「${name}」修改前/后对比`, 4000);
+          } catch (e) { /* setStatusBarMessage 不可用则忽略 */ }
+        })
+        .catch((e) => this.output.appendLine(`[router] show_diff 打开临时文件失败: ${e && e.message}`));
+    } catch (e) {
+      this.output.appendLine(`[router] show_diff 写临时文件失败: ${e && e.message}`);
+    }
   }
 
   /**

@@ -87,7 +87,12 @@ class ClaudeSessionAssembler {
     this.textSegmentActive = false;
     this.thinkingSegmentActive = false;
     this.sessionId = '';
-    this._seq = 0;
+    // 序列号必须**全生命周期单调递增、绝不归零**：前端 __minAcceptedUpdateSequence 只增不减，
+    // 归零会让新会话的 updateMessages 因 seq 落后被整批丢弃（切 provider/model、/clear 都走 reset）。
+    // 对齐 IDEA StreamMessageCoalescer.resetStreamState 的 `++updateSequence`（不是置 0）。
+    this._seq = (this._seq | 0) + 1;
+    // resume 全量回放去重：记录已 push 过的 tool_result 的 tool_use_id，避免历史 tool_result 被重复 push。
+    this._seenToolResultIds = new Set();
     // 上下文用量：当前模型（决定上下文窗口）+ 最近一次累计 tokens（用于模型切换时按新窗口重算）
     this.currentModel = '';
     this.lastUsedTokens = 0;
@@ -278,10 +283,23 @@ class ClaudeSessionAssembler {
   _handleAssistantMessage(jsonStr) {
     let msg;
     try { msg = JSON.parse(jsonStr); } catch (e) { return; }
+    const incomingContent = msg && msg.message && Array.isArray(msg.message.content) ? msg.message.content : null;
+    // resume 全量回放去重（移植 IDEA ReplayDeduplicator 的目的，简化判据）：
+    // SDK 在 runtime 中途重建后会 `resume` 重放整段历史，daemon 对「含 tool_use 的历史 assistant」
+    // 也会重发 [MESSAGE]。若此时当前轮尚未产出任何增量（currentAssistant 为 null）且本条携带的
+    // tool_use 全是「历史已存在的 id」，说明这是历史重放 —— 跳过，否则 _ensureAssistant() 会新建
+    // 一个幽灵气泡并把后续新内容并进去，导致对话气泡错乱/合并。（纯文本历史 assistant 不会重发
+    // [MESSAGE]，见 daemon shouldOutputMessage，故无需处理。）
+    if (!this.currentAssistant && incomingContent) {
+      const toolUses = incomingContent.filter((b) => b && b.type === 'tool_use' && b.id);
+      if (toolUses.length > 0 && toolUses.every((b) => this._toolUseIdExists(b.id))) {
+        this.output.appendLine('[replay] 跳过历史 assistant 重放（tool_use id 已存在）');
+        return;
+      }
+    }
     // 结构性更新：合并 tool_use 等块。MVP 策略：以增量累积的文本为准，
     // 但采纳 incoming raw 中的非文本块（tool_use / thinking 结构）。
     this._ensureAssistant();
-    const incomingContent = msg && msg.message && Array.isArray(msg.message.content) ? msg.message.content : null;
     if (incomingContent) {
       const curContent = this._assistantContentArray();
       // 保留已累积的 text/thinking 块，追加 incoming 的 tool_use 块
@@ -306,6 +324,11 @@ class ClaudeSessionAssembler {
     const content = userMsg && userMsg.message ? userMsg.message.content : null;
     const hasToolResult = Array.isArray(content) && content.some((b) => b && b.type === 'tool_result');
     if (hasToolResult) {
+      // resume 回放去重：按 tool_use_id 判定。历史重放的 tool_result 与 [TOOL_RESULT] 实时结果
+      // 共用 _seenToolResultIds；本条全部 id 都已 push 过则跳过，避免重复 tool_result 卡片。
+      const ids = this._toolResultIdsOf(content);
+      if (ids.length > 0 && ids.every((id) => this._seenToolResultIds.has(id))) return;
+      for (const id of ids) this._seenToolResultIds.add(id);
       this.messages.push({ type: 'user', content: '[tool_result]', timestamp: Date.now(), raw: userMsg });
       this._pushMessages();
       return;
@@ -341,9 +364,28 @@ class ClaudeSessionAssembler {
     let block;
     try { block = JSON.parse(jsonStr); } catch (e) { return; }
     if (!block || !block.tool_use_id) return;
+    // resume 回放去重：同一 tool_use_id 的结果只 push 一次（实时 [TOOL_RESULT] 与历史重放共用判据）。
+    if (this._seenToolResultIds.has(block.tool_use_id)) return;
+    this._seenToolResultIds.add(block.tool_use_id);
     const raw = { type: 'user', message: { content: [block] } };
     this.messages.push({ type: 'user', content: '[tool_result]', timestamp: Date.now(), raw });
     this._pushMessages();
+  }
+
+  /** 提取一条消息 content 数组里所有 tool_result 的 tool_use_id。 */
+  _toolResultIdsOf(content) {
+    if (!Array.isArray(content)) return [];
+    return content.filter((b) => b && b.type === 'tool_result' && b.tool_use_id).map((b) => b.tool_use_id);
+  }
+
+  /** 历史消息里是否已存在某个 tool_use id（用于识别 resume 重放的历史 assistant）。 */
+  _toolUseIdExists(id) {
+    for (const m of this.messages) {
+      if (m.type !== 'assistant' || !m.raw || !m.raw.message) continue;
+      const c = m.raw.message.content;
+      if (Array.isArray(c) && c.some((b) => b && b.type === 'tool_use' && b.id === id)) return true;
+    }
+    return false;
   }
 
   // ===== raw 装配辅助 =====

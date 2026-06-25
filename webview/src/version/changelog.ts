@@ -13,6 +13,18 @@ export interface ChangelogEntry {
 
 export const CHANGELOG_DATA: ChangelogEntry[] = [
   {
+    version: '0.1.8',
+    date: '2026-06-25',
+    content: {
+      en: `🛠 Fixes
+- Fix garbled conversation / duplicated answer bubbles after several follow-up questions in the same session (dedup history replay on resume + correct message sequence)
+- Fix the "View diff" button on tool cards doing nothing: it now opens a before / after comparison of the change`,
+      zh: `🛠 本次更新
+- 修复同一会话多次提问后，中间对话显示错乱 / 回答气泡重复合并的问题（续聊重放历史时去重 + 修正消息序号）
+- 修复点击工具卡片「查看差异」按钮没有反应的问题：现在会打开修改前 / 后的内容对比`,
+    },
+  },
+  {
     version: '0.1.7',
     date: '2026-06-25',
     content: {
