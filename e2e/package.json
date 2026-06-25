@@ -1,0 +1,14 @@
+{
+  "name": "ccgui-e2e",
+  "version": "0.0.0",
+  "private": true,
+  "description": "CC GUI（HBuilderX 版）webview 无头端到端测试：真实发布产物 + 真实桥接 shim + 真实装配器，仅 mock daemon stdout。发版前必跑。",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.52.0"
+  }
+}

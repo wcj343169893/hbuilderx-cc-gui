@@ -1,0 +1,5 @@
+# Playwright 运行产物（不入库）
+/test-results/
+/playwright-report/
+/blob-report/
+/.cache/
