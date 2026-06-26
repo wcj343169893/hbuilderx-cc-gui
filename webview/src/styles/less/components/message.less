@@ -922,6 +922,14 @@
     word-wrap: break-word;
     overflow-wrap: break-word;
     max-width: 100%;
+    /* Prevent long thinking content from pushing the page too tall.
+       Show a scrollable viewport so the conversation remains navigable. */
+    max-height: 250px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    /* Subtle fade hint at the bottom when content is scrollable */
+    mask-image: linear-gradient(to bottom, black 80%, transparent 100%);
+    -webkit-mask-image: linear-gradient(to bottom, black 80%, transparent 100%);
 }
 
 .thinking-content .markdown-content {

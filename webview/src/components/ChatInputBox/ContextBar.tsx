@@ -40,6 +40,8 @@ interface ContextBarProps {
   autoOpenFileEnabled?: boolean;
   /** Callback to enable file context (called from placeholder click) */
   onRequestEnableFileContext?: () => void;
+  /** Open context usage dialog (click on token percentage indicator) */
+  onContextUsageClick?: () => void;
 }
 
 export const ContextBar: React.FC<ContextBarProps> = memo(({
@@ -60,6 +62,7 @@ export const ContextBar: React.FC<ContextBarProps> = memo(({
   onToggleStatusPanel,
   autoOpenFileEnabled = false,
   onRequestEnableFileContext,
+  onContextUsageClick,
 }) => {
   const { t } = useTranslation();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -162,6 +165,7 @@ export const ContextBar: React.FC<ContextBarProps> = memo(({
               usedTokens={usedTokens}
               maxTokens={maxTokens}
               size={14}
+              onClick={onContextUsageClick}
             />
           </div>
         )}

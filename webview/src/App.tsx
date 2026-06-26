@@ -28,6 +28,7 @@ import {
 import { useProjectName } from './hooks/useProjectName';
 import { applyDiffTheme, getStoredDiffTheme } from './utils/diffTheme';
 import type { Attachment, ChatInputBoxHandle } from './components/ChatInputBox/types';
+import { apply1MContextSuffix } from './components/ChatInputBox/types';
 import { ToastContainer } from './components/Toast';
 import { ChatHeader } from './components/ChatHeader';
 import { ChatScreen } from './components/ChatScreen';
@@ -161,6 +162,25 @@ const App = () => {
     handleStreamingEnabledChange, handleSendShortcutChange,
     handleAutoOpenFileEnabledChange, handleLongContextChange,
   } = useModelProviderState({ addToast, t });
+
+  // ── Context usage click handler (token percentage indicator) ──
+  const handleContextUsageClick = useCallback(() => {
+    const requestId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `context-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
+    openContextUsageDialog(requestId, true);
+
+    const sent = sendBridgeEvent('get_context_usage', JSON.stringify({
+      model: apply1MContextSuffix(selectedModel, longContextEnabled ?? false),
+      requestId,
+    }));
+
+    if (!sent) {
+      closeContextUsageDialog(requestId);
+      addToast('Cannot open context usage: bridge unavailable', 'error');
+    }
+  }, [selectedModel, longContextEnabled, openContextUsageDialog, closeContextUsageDialog, addToast]);
 
   // ── Global drag event interception ──
   useEffect(() => {
@@ -332,6 +352,12 @@ const App = () => {
     openContextUsageDialog,
     closeContextUsageDialog,
   });
+
+  // ── Compact context handler (triggered from ContextUsageDialog compact button) ──
+  const handleCompactContext = useCallback(() => {
+    closeContextUsageDialog();
+    executeMessage('/compact');
+  }, [closeContextUsageDialog, executeMessage]);
 
   // ── Message queue ──
   const {
@@ -521,6 +547,7 @@ const App = () => {
           onLongContextChange={handleLongContextChange}
           messageQueue={messageQueue}
           onRemoveFromQueue={dequeueMessage}
+          onContextUsageClick={handleContextUsageClick}
         />
       ) : (
         <HistoryView
@@ -553,6 +580,7 @@ const App = () => {
         onRewindCancel={handleRewindCancel}
         currentProvider={currentProvider}
         permissionDialogTimeoutSeconds={permissionDialogTimeoutSeconds}
+        onCompactContext={handleCompactContext}
       />
     </>
   );

@@ -63,6 +63,8 @@ export interface AppDialogsProps {
   currentProvider: string;
   /** Permission dialog timeout in seconds (from backend config). */
   permissionDialogTimeoutSeconds?: number;
+  /** Compact context handler (triggered from ContextUsageDialog compact button). */
+  onCompactContext?: () => void;
 }
 
 /**
@@ -85,6 +87,7 @@ export const AppDialogs = ({
   onRewindCancel,
   currentProvider,
   permissionDialogTimeoutSeconds = DEFAULT_PERMISSION_DIALOG_TIMEOUT_SECONDS,
+  onCompactContext,
 }: AppDialogsProps) => {
   const { t } = useTranslation();
   const {
@@ -204,6 +207,7 @@ export const AppDialogs = ({
           isLoading={contextUsageIsLoading}
           data={contextUsageData}
           onClose={closeContextUsageDialog}
+          onCompact={onCompactContext}
         />
       ) : null}
     </>

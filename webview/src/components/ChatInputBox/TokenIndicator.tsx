@@ -10,6 +10,7 @@ export const TokenIndicator = ({
   size = 14,
   usedTokens,
   maxTokens,
+  onClick,
 }: TokenIndicatorProps) => {
   const { t } = useTranslation();
   // Circle radius (accounting for stroke space)
@@ -46,7 +47,14 @@ export const TokenIndicator = ({
     : t('chat.usagePercentage', { percentage: tooltipPercentage });
 
   return (
-    <div className="token-indicator">
+    <div
+      className={`token-indicator${onClick ? ' clickable' : ''}`}
+      onClick={onClick}
+      title={onClick ? t('contextUsage.title', { defaultValue: 'Context Usage' }) : undefined}
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onKeyDown={onClick ? (e: React.KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } } : undefined}
+    >
       <div className="token-indicator-wrap">
         <svg
           className="token-indicator-ring"

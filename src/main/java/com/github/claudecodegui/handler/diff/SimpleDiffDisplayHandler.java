@@ -74,12 +74,25 @@ public class SimpleDiffDisplayHandler implements DiffActionHandler {
         try {
             JsonObject json = gson.fromJson(content, JsonObject.class);
             String filePath = json.has("filePath") ? json.get("filePath").getAsString() : "";
-            String oldContent = json.has("oldContent") ? json.get("oldContent").getAsString() : "";
-            String newContent = json.has("newContent") ? json.get("newContent").getAsString() : "";
+            String oldContentStr = json.has("oldContent") ? json.get("oldContent").getAsString() : "";
+            String newContentStr = json.has("newContent") ? json.get("newContent").getAsString() : "";
             String title = json.has("title") ? json.get("title").getAsString() : null;
+
+            if (filePath.isBlank()) {
+                LOG.warn("show_diff: empty file path");
+                context.callJavaScript("addErrorMessage", context.escapeJs(
+                    ClaudeCodeGuiBundle.message("diff.emptyPath")
+                ));
+                return;
+            }
 
             if (!fileOperations.isPathWithinProject(filePath)) {
                 LOG.warn("Security: file path outside project directory: " + filePath);
+                ApplicationManager.getApplication().invokeLater(() -> {
+                    context.callJavaScript("addErrorMessage", context.escapeJs(
+                        ClaudeCodeGuiBundle.message("diff.pathOutsideProject", filePath)
+                    ));
+                });
                 return;
             }
 
@@ -91,9 +104,9 @@ public class SimpleDiffDisplayHandler implements DiffActionHandler {
                     FileType fileType = FileTypeManager.getInstance().getFileTypeByFileName(fileName);
 
                     DiffContent leftContent = DiffContentFactory.getInstance()
-                            .create(context.getProject(), oldContent, fileType);
+                            .create(context.getProject(), oldContentStr, fileType);
                     DiffContent rightContent = DiffContentFactory.getInstance()
-                            .create(context.getProject(), newContent, fileType);
+                            .create(context.getProject(), newContentStr, fileType);
 
                     String diffTitle = title != null ? title : ClaudeCodeGuiBundle.message("diff.fileChange", fileName);
                     SimpleDiffRequest diffRequest = new SimpleDiffRequest(

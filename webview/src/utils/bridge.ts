@@ -235,8 +235,21 @@ export const refreshFile = (filePath: string) => {
   sendToJava('refresh_file', { filePath });
 };
 
-export const showDiff = (filePath: string, oldContent: string, newContent: string, title?: string) => {
+/** Show a toast warning when a diff operation cannot proceed due to invalid path. */
+function warnDiffUnavailable(filePath: string | undefined | null): void {
+  if (!filePath) {
+    window.addToast?.('Cannot show diff: no file path available', 'warning');
+    return;
+  }
   if (!isValidMutatingPath(filePath)) {
+    window.addToast?.(`Cannot show diff: invalid file path "${filePath}"`, 'warning');
+    return;
+  }
+}
+
+export const showDiff = (filePath: string, oldContent: string, newContent: string, title?: string) => {
+  if (!filePath || !isValidMutatingPath(filePath)) {
+    warnDiffUnavailable(filePath);
     return;
   }
   sendToJava('show_diff', { filePath, oldContent, newContent, title });
@@ -247,7 +260,8 @@ export const showMultiEditDiff = (
   edits: Array<{ oldString: string; newString: string; replaceAll?: boolean }>,
   currentContent?: string
 ) => {
-  if (!isValidMutatingPath(filePath)) {
+  if (!filePath || !isValidMutatingPath(filePath)) {
+    warnDiffUnavailable(filePath);
     return;
   }
   sendToJava('show_multi_edit_diff', { filePath, edits, currentContent });
@@ -266,7 +280,8 @@ export const showEditableDiff = (
   status: 'A' | 'M'
 ) => {
   // Security: Validate file path (defense-in-depth, backend also validates)
-  if (!isValidMutatingPath(filePath)) {
+  if (!filePath || !isValidMutatingPath(filePath)) {
+    warnDiffUnavailable(filePath);
     return;
   }
   sendToJava('show_editable_diff', { filePath, operations, status });
@@ -284,7 +299,8 @@ export const showEditPreviewDiff = (
   edits: Array<{ oldString: string; newString: string; replaceAll?: boolean }>,
   title?: string
 ) => {
-  if (!isValidMutatingPath(filePath)) {
+  if (!filePath || !isValidMutatingPath(filePath)) {
+    warnDiffUnavailable(filePath);
     return;
   }
   sendToJava('show_edit_preview_diff', { filePath, edits, title });
@@ -308,7 +324,8 @@ export const showEditFullDiff = (
   replaceAll?: boolean,
   title?: string
 ) => {
-  if (!isValidMutatingPath(filePath)) {
+  if (!filePath || !isValidMutatingPath(filePath)) {
+    warnDiffUnavailable(filePath);
     return;
   }
   sendToJava('show_edit_full_diff', { filePath, oldString, newString, originalContent, replaceAll, title });

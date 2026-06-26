@@ -161,6 +161,26 @@ function isSourceFileName(value: string): boolean {
   return true;
 }
 
+// Temp directory patterns used by Claude Code and other tools during execution.
+// These paths are transient and should NOT be linkified as clickable file links
+// because the files either don't exist or are not user-facing project files.
+// Patterns are intentionally specific to avoid false positives on legitimate
+// project paths (e.g., "D:\Project\Template\file.ts" should NOT be filtered).
+const TEMP_DIR_PATTERNS = [
+  // Windows: user-specific temp directory (most common for tool execution)
+  /[\\/]AppData[\\/]Local[\\/]Temp[\\/]/i,
+  // Windows: system temp directory
+  /^[A-Za-z]:\\Windows\\Temp\\/i,
+  // POSIX: standard temp directories
+  /^\/tmp\//,
+  /^\/var\/tmp\//,
+];
+
+function isTempPath(filePath: string): boolean {
+  if (!filePath) return false;
+  return TEMP_DIR_PATTERNS.some((pattern) => pattern.test(filePath));
+}
+
 const HTML_ESCAPE_LOOKUP: Record<string, string> = {
   '&': '&amp;',
   '<': '&lt;',
@@ -233,19 +253,19 @@ const DETECTORS: Detector[] = [
     type: 'file',
     priority: 1,
     matcher: createGlobalRegex(FILE_WITH_LINE_REGEX),
-    validate: (text, match) => parseFileLinkTarget(match.value) !== null && isValidFileBoundary(text, match),
+    validate: (text, match) => parseFileLinkTarget(match.value) !== null && isValidFileBoundary(text, match) && !isTempPath(match.value),
   },
   {
     type: 'file',
     priority: 2,
     matcher: createGlobalRegex(WINDOWS_ABSOLUTE_PATH_REGEX),
-    validate: isValidFileBoundary,
+    validate: (text, match) => isValidFileBoundary(text, match) && !isTempPath(match.value),
   },
   {
     type: 'file',
     priority: 3,
     matcher: createGlobalRegex(POSIX_ABSOLUTE_PATH_REGEX),
-    validate: isValidFileBoundary,
+    validate: (text, match) => isValidFileBoundary(text, match) && !isTempPath(match.value),
   },
   {
     type: 'file',

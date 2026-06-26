@@ -274,6 +274,26 @@ export function useStreamingMessages(): UseStreamingMessagesReturn {
   const getOrCreateStreamingAssistantIndex = (list: ClaudeMessage[]): number => {
     const currentIdx = streamingMessageIndexRef.current;
     if (currentIdx >= 0 && currentIdx < list.length && list[currentIdx]?.type === 'assistant') {
+      // Check that there is no user message after the streaming assistant.
+      // When the user sends a new message during an active stream, the new
+      // user message is appended after the assistant, and we must NOT continue
+      // streaming into the old (now-stale) assistant. Instead, create a fresh
+      // placeholder at the end for the new turn's response.
+      const hasUserMessageAfter = list.slice(currentIdx + 1).some((msg) => msg?.type === 'user');
+      if (hasUserMessageAfter) {
+        // Stale index: a user message was sent after this assistant.
+        // The old assistant is now part of the previous (completed) turn.
+        // Create a new placeholder for the incoming response.
+        streamingMessageIndexRef.current = list.length;
+        list.push({
+          type: 'assistant',
+          content: '',
+          isStreaming: true,
+          timestamp: new Date().toISOString(),
+          raw: { message: { content: [] } } as ClaudeMessage['raw'],
+        });
+        return streamingMessageIndexRef.current;
+      }
       return currentIdx;
     }
     const lastAssistantIdx = findLastAssistantIndex(list);

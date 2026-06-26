@@ -40,6 +40,7 @@ interface ContextUsageDialogProps {
   isLoading: boolean;
   data: ContextUsageData | null;
   onClose: () => void;
+  onCompact?: () => void;
 }
 
 const COLOR_MAP: Record<string, string> = {
@@ -109,6 +110,7 @@ const ContextUsageDialog = memo(function ContextUsageDialog({
   isLoading,
   data,
   onClose,
+  onCompact,
 }: ContextUsageDialogProps) {
   const { t } = useTranslation();
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -286,17 +288,29 @@ const ContextUsageDialog = memo(function ContextUsageDialog({
           <h3 id={titleId} className="context-usage-title">
             {t('contextUsage.title', { defaultValue: 'Context Usage' })}
           </h3>
-          <button
-            ref={closeButtonRef}
-            type="button"
-            className="context-usage-close"
-            onMouseDown={handleCloseMouseDown}
-            onClick={handleCloseClick}
-            title={t('common.close', { defaultValue: 'Close' })}
-            aria-label={t('common.close', { defaultValue: 'Close' })}
-          >
-            ×
-          </button>
+          <div className="context-usage-header-actions">
+            {onCompact && (
+              <button
+                type="button"
+                className="context-usage-compact-btn"
+                onClick={(e) => { e.stopPropagation(); onCompact(); }}
+                title={t('contextUsage.compact', { defaultValue: 'Compact conversation to free context space' })}
+              >
+                {t('contextUsage.compact', { defaultValue: 'Compact' })}
+              </button>
+            )}
+            <button
+              ref={closeButtonRef}
+              type="button"
+              className="context-usage-close"
+              onMouseDown={handleCloseMouseDown}
+              onClick={handleCloseClick}
+              title={t('common.close', { defaultValue: 'Close' })}
+              aria-label={t('common.close', { defaultValue: 'Close' })}
+            >
+              ×
+            </button>
+          </div>
         </div>
 
         {/* Summary */}

@@ -674,6 +674,8 @@ export interface ChatInputBoxProps {
   longContextEnabled?: boolean;
   /** Toggle long context callback */
   onLongContextChange?: (enabled: boolean) => void;
+  /** Open context usage dialog (click on token percentage indicator) */
+  onContextUsageClick?: () => void;
 }
 
 /**
@@ -769,6 +771,8 @@ export interface TokenIndicatorProps {
   usedTokens?: number;
   /** Maximum context tokens */
   maxTokens?: number;
+  /** Click callback (opens context usage dialog) */
+  onClick?: () => void;
 }
 
 /**

@@ -32,6 +32,7 @@ export function ChatInputBoxHeader({
   onDismissOpenSourceBanner,
   autoOpenFileEnabled,
   onRequestEnableFileContext,
+  onContextUsageClick,
 }: {
   sdkInstalled: boolean;
   sdkStatusLoading: boolean;
@@ -60,6 +61,7 @@ export function ChatInputBoxHeader({
   onDismissOpenSourceBanner?: () => void;
   autoOpenFileEnabled?: boolean;
   onRequestEnableFileContext?: () => void;
+  onContextUsageClick?: () => void;
 }) {
   return (
     <>
@@ -139,6 +141,7 @@ export function ChatInputBoxHeader({
         onToggleStatusPanel={onToggleStatusPanel}
         autoOpenFileEnabled={autoOpenFileEnabled}
         onRequestEnableFileContext={onRequestEnableFileContext}
+        onContextUsageClick={onContextUsageClick}
       />
     </>
   );

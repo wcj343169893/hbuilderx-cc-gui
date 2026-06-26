@@ -111,6 +111,9 @@ export interface ChatScreenProps {
   // Message queue
   messageQueue: MessageQueueValue;
   onRemoveFromQueue: (id: string) => void;
+
+  // Context usage dialog
+  onContextUsageClick?: () => void;
 }
 
 /**
@@ -141,6 +144,7 @@ export const ChatScreen = ({
   onStreamingEnabledChange,
   onAutoOpenFileEnabledChange, onLongContextChange,
   messageQueue, onRemoveFromQueue,
+  onContextUsageClick,
 }: ChatScreenProps) => {
   const { t } = useTranslation();
   const { messages, loading, isThinking, streamingActive, loadingStartTime, subagentHistories } = useMessages();
@@ -344,6 +348,7 @@ export const ChatScreen = ({
           onAutoOpenFileEnabledChange={onAutoOpenFileEnabledChange}
           longContextEnabled={longContextEnabled}
           onLongContextChange={onLongContextChange}
+          onContextUsageClick={onContextUsageClick}
         />
       </div>
     </>
