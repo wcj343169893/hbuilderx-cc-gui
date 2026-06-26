@@ -13,6 +13,32 @@ export interface ChangelogEntry {
 
 export const CHANGELOG_DATA: ChangelogEntry[] = [
   {
+    version: '0.4.6',
+    date: '2026-06-27',
+    content: {
+      en: `✨ Features
+- Click the token percentage indicator to open the Context Usage dialog
+- "Compact" button in Context Usage dialog to compress conversation context
+
+🐛 Fixes
+- Diff functions now show toast warnings for empty/invalid file paths
+- Backend diff handler shows user-facing error messages for invalid paths
+- Fix mid-stream message causing garbled conversation bubbles
+- Fix long thinking content pushing page too tall (max-height 250px + scroll)
+- Fix temporary directory paths being linkified as clickable file links`,
+      zh: `✨ 新功能
+- Token 百分比圆环点击直接打开上下文用量弹窗
+- 上下文用量弹窗新增「Compact」按钮，一键压缩对话上下文
+
+🐛 修复
+- 前端 diff 函数空路径弹出 toast 警告提示
+- 后端 diff 处理器空/越界路径显示用户错误提示
+- 修复流式中途新消息导致对话气泡错乱的问题
+- 修复长思考内容撑高页面（限制 250px + 可滚动 + 底部渐隐遮罩）
+- 修复临时目录路径被错误渲染为可点击文件链接`,
+    },
+  },
+  {
     version: '0.1.8',
     date: '2026-06-25',
     content: {

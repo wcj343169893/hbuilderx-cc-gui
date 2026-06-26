@@ -1,3 +1,39 @@
+##### **2026年6月27日（v0.4.6）**
+
+English：
+
+✨ Features
+- Click the token percentage indicator in the chat input bar to open the Context Usage dialog showing detailed token breakdown by category (same as `/context` command)
+- Add a "Compact" button in the Context Usage dialog header that triggers `/compact` to free context space
+
+🐛 Fixes
+- Fix all diff bridge functions silently ignoring empty/null file paths: now surface a toast warning when file path is missing or invalid
+- Fix backend diff handler not showing error messages for empty/out-of-project paths: now shows user-facing error toasts in both English and Chinese
+- Fix mid-stream new message causing garbled conversation bubbles: detect stale streaming assistant when a user message appears after it and create a fresh placeholder instead of overwriting
+- Fix long thinking content pushing the page too tall: `.thinking-content` now capped at 250px with vertical scroll and a bottom fade mask
+- Fix temporary directory paths (AppData/Local/Temp, /tmp, /var/tmp) being linkified as clickable file links in chat messages
+
+🔧 Improvements
+- Token percentage ring is now accessible: keyboard-focusable with Enter/Space activation and proper ARIA role
+
+中文：
+
+✨ 新功能
+- Token 百分比圆环支持点击：点击输入栏中的上下文用量百分比可直接打开上下文用量弹窗，查看各分类 Token 详情（等同于 `/context` 命令）
+- 上下文用量弹窗标题栏新增「Compact」按钮，一键压缩对话上下文释放空间（触发 `/compact` 命令）
+
+🐛 修复
+- 修复所有前端 diff 桥接函数在文件路径为空/无效时静默失败的问题：现在统一弹出 toast 警告提示
+- 修复后端 diff 处理器在空路径/路径超出项目时无用户提示的问题：现在前后端均显示中英文错误 toast
+- 修复流式回复中途发送新消息导致对话气泡错乱的问题：检测到 streaming 助手后有新 user 消息时，创建新占位而非复写旧气泡
+- 修复长思考内容撑高整个页面的问题：`.thinking-content` 限制最大高度 250px，超出可滚动并带底部渐隐遮罩
+- 修复临时目录路径（AppData/Local/Temp、/tmp、/var/tmp）在聊天消息中被错误渲染为可点击文件链接的问题
+
+🔧 改进
+- Token 百分比圆环支持无障碍访问：可通过键盘聚焦、Enter/Space 键激活，具备正确的 ARIA role 属性
+
+---
+
 ##### **2026年6月11日（v0.4.5）**
 
 English:
