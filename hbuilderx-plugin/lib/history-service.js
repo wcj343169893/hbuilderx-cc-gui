@@ -467,6 +467,32 @@ function contentHasBlockType(obj, blockType) {
 }
 
 /**
+ * 从 JSONL 原始行中找出最后一条 assistant 消息的 usage 对象。
+ * 对齐 Java TokenUsageUtils.findLastUsageFromRawMessages：
+ * 从尾部向头部扫描，找最后一条 type=assistant 且携带 message.usage 的行。
+ * @param {string} cwd
+ * @param {string} sessionId
+ * @returns {object|null} { input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens } 或 null
+ */
+function findLastUsageFromRawMessages(cwd, sessionId) {
+  const raws = readSessionRawMessages(cwd, sessionId);
+  for (let i = raws.length - 1; i >= 0; i--) {
+    const obj = raws[i];
+    if (obj.type !== 'assistant') continue;
+    const usage = obj.message && obj.message.usage;
+    if (usage && typeof usage === 'object') {
+      return {
+        input_tokens: usage.input_tokens || 0,
+        output_tokens: usage.output_tokens || 0,
+        cache_read_input_tokens: usage.cache_read_input_tokens || 0,
+        cache_creation_input_tokens: usage.cache_creation_input_tokens || 0,
+      };
+    }
+  }
+  return null;
+}
+
+/**
  * 把一条 JSONL 原始行转换为前端 ClaudeMessage（或 null 表示过滤）。
  * 严格对齐 Java MessageParser.parseServerMessage 的取舍：
  *   - 过滤 isMeta
@@ -702,6 +728,7 @@ module.exports = {
   sanitizePath,
   getProjectSessionDir,
   readSessionRawMessages,
+  findLastUsageFromRawMessages,
   jsonlLineToClaudeMessage,
   parseSessionIds,
   isValidSessionId,

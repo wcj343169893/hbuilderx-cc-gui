@@ -96,6 +96,7 @@ class ClaudeSessionAssembler {
     // 上下文用量：当前模型（决定上下文窗口）+ 最近一次累计 tokens（用于模型切换时按新窗口重算）
     this.currentModel = '';
     this.lastUsedTokens = 0;
+    this._onAutoCompact = null;
   }
 
   /** 追加一条用户消息（本地回显，发送前调用）。 */
@@ -256,6 +257,14 @@ class ClaudeSessionAssembler {
     this._emitUsage(this.lastUsedTokens);
   }
 
+  /**
+   * 设置自动 compact 回调：当上下文用量超过 80% 阈值时调用。
+   * @param {function(usedTokens:number, maxTokens:number, percentage:number):void} fn
+   */
+  setAutoCompactCallback(fn) {
+    this._onAutoCompact = typeof fn === 'function' ? fn : null;
+  }
+
   _handleUsage(jsonStr) {
     try {
       const usage = JSON.parse(jsonStr);
@@ -278,6 +287,12 @@ class ClaudeSessionAssembler {
       maxTokens,
       limit: maxTokens,
     }));
+    // 自动 compact 检测：用量超过 80% 阈值时通知外部
+    const AUTO_COMPACT_THRESHOLD = 0.8;
+    if (this._onAutoCompact && this.lastUsedTokens > 0 && maxTokens > 0
+        && (this.lastUsedTokens / maxTokens) >= AUTO_COMPACT_THRESHOLD) {
+      this._onAutoCompact(this.lastUsedTokens, maxTokens, percentage);
+    }
   }
 
   _handleAssistantMessage(jsonStr) {

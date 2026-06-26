@@ -66,6 +66,17 @@ class MessageRouter {
     this.output = output || { appendLine() {} };
 
     this.assembler = new ClaudeSessionAssembler(bridge, output);
+    // 自动 compact：用量超 80% 阈值时触发
+    this._pendingCompact = false;
+    this.assembler.setAutoCompactCallback((usedTokens, maxTokens, percentage) => {
+      this.output.appendLine(`[router] 上下文用量 ${percentage}%，超过自动 compact 阈值，触发压缩`);
+      if (!this._busy) {
+        this._handleSend(JSON.stringify({ text: '/compact' }));
+      } else {
+        this._pendingCompact = true;
+        this.output.appendLine('[router] 当前忙碌，compact 将在本轮回复完成后自动触发');
+      }
+    });
     this.permission = new PermissionBridge(bridge, output);
     this.aiBridge = null;
     this.nodeInfo = null;
@@ -240,6 +251,236 @@ class MessageRouter {
       await this.aiBridge.request('claude.resetRuntime', {});
     } catch (e) {
       this.output.appendLine(`[router] resetRuntime 失败（将于下次发送重建）: ${e && e.message}`);
+    }
+  }
+
+  // ===================== cc-switch 导入（对齐 Java ProviderImportExportSupport） =====================
+
+  /**
+   * 调用 ai-bridge/read-cc-switch-db.js 读取 cc-switch SQLite 数据库。
+   * @param {string} dbPath - .db 文件绝对路径
+   * @returns {Promise<{success:boolean, providers?:Array, count?:number, error?:string}>}
+   */
+  async _readCcSwitchDb(dbPath) {
+    const cp = require('child_process');
+    const scriptPath = path.join(__dirname, '..', 'ai-bridge', 'read-cc-switch-db.js');
+    const nodeExe = this.nodeInfo && this.nodeInfo.path ? this.nodeInfo.path : process.execPath;
+
+    this.output.appendLine(`[router] 读取 cc-switch DB: ${dbPath}`);
+    return new Promise((resolve) => {
+      let stdout = '';
+      let stderr = '';
+      const child = cp.spawn(nodeExe, [scriptPath, dbPath], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      const timeout = setTimeout(() => {
+        try { child.kill(); } catch (e) { /* ignore */ }
+        resolve({ success: false, error: '读取 cc-switch 数据库超时（15s）' });
+      }, 15000);
+      child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
+      child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+      child.on('close', (code) => {
+        clearTimeout(timeout);
+        if (code !== 0) {
+          this.output.appendLine(`[router] read-cc-switch-db exit ${code}: ${stderr}`);
+          try {
+            const errObj = JSON.parse(stderr.trim().split('\n').pop() || '{}');
+            resolve(errObj);
+          } catch (e) {
+            resolve({ success: false, error: stderr || `Exit code ${code}` });
+          }
+          return;
+        }
+        const lines = stdout.trim().split('\n');
+        const lastLine = lines[lines.length - 1] || '';
+        try {
+          const result = JSON.parse(lastLine);
+          resolve(result);
+        } catch (e) {
+          resolve({ success: false, error: 'Failed to parse script output: ' + lastLine.slice(0, 200) });
+        }
+      });
+      child.on('error', (err) => {
+        clearTimeout(timeout);
+        resolve({ success: false, error: `Failed to spawn: ${err.message}` });
+      });
+    });
+  }
+
+  /**
+   * 预览 cc-switch 导入：读取 ~/.cc-switch/cc-switch.db，把供应商列表发前端预览。
+   * 对齐 Java ProviderImportExportSupport.handlePreviewCcSwitchImport。
+   */
+  async _handlePreviewCcSwitchImport() {
+    try {
+      const dbPath = path.join(os.homedir(), '.cc-switch', 'cc-switch.db');
+      if (!fs.existsSync(dbPath)) {
+        this.bridge.callJs('backend_notification', 'warning',
+          'cc-switch 配置未找到',
+          `数据库文件不存在: ${dbPath}`);
+        return;
+      }
+
+      const result = await this._readCcSwitchDb(dbPath);
+      if (!result.success) {
+        this.bridge.callJs('backend_notification', 'error',
+          '读取 cc-switch 数据库失败',
+          result.error || '未知错误');
+        return;
+      }
+
+      if (!result.providers || result.providers.length === 0) {
+        this.bridge.callJs('backend_notification', 'info',
+          '未找到 Claude 供应商',
+          'cc-switch 数据库中未包含 Claude 供应商配置');
+        return;
+      }
+
+      const previewData = { providers: result.providers };
+      this.bridge.callJs('import_preview_result', JSON.stringify(previewData));
+      this.output.appendLine(`[router] 从 cc-switch DB 读取到 ${result.count || result.providers.length} 个供应商`);
+    } catch (e) {
+      this.output.appendLine(`[router] preview_cc_switch_import 异常: ${e && e.message}`);
+      this.bridge.callJs('backend_notification', 'error',
+        '导入预览失败',
+        e && e.message ? e.message : String(e));
+    }
+  }
+
+  /**
+   * 打开文件选择器让用户选取 cc-switch .db 文件。
+   * 对齐 Java ProviderImportExportSupport.handleOpenFileChooserForCcSwitch。
+   * HBuilderX 用 hx.window.showFormDialog 的 fileSelectInput 代替 IDEA 的 FileChooser。
+   */
+  async _handleOpenFileChooserForCcSwitch() {
+    try {
+      // HBuilderX 无原生 showOpenDialog，用 showFormDialog + fileSelectInput
+      if (!(this.hx.window && typeof this.hx.window.showFormDialog === 'function')) {
+        this.bridge.callJs('backend_notification', 'error',
+          '功能不可用',
+          '当前 HBuilderX 版本不支持文件选择对话框');
+        return;
+      }
+
+      const defaultDir = path.join(os.homedir(), '.cc-switch');
+      const defaultValue = fs.existsSync(defaultDir)
+        ? path.join(defaultDir, 'cc-switch.db')
+        : '';
+      const dialogResult = await this.hx.window.showFormDialog({
+        title: '选择 cc-switch 数据库文件',
+        width: 540,
+        height: 220,
+        submitButtonText: '读取',
+        cancelButtonText: '取消',
+        formItems: [{
+          type: 'fileSelectInput',
+          name: 'dbPath',
+          mode: 'file',
+          label: 'cc-switch 数据库',
+          placeholder: '请选择 cc-switch.db 文件',
+          value: defaultValue,
+        }],
+      });
+
+      const data = dialogResult && dialogResult.data;
+      let dbPath = null;
+      if (data) {
+        dbPath = typeof data === 'string' ? data : (data.dbPath || data.path || '');
+      }
+      if (!dbPath) {
+        this.bridge.callJs('backend_notification', 'info',
+          '已取消',
+          '未选择文件');
+        return;
+      }
+
+      if (!fs.existsSync(dbPath)) {
+        this.bridge.callJs('backend_notification', 'error',
+          '文件未找到',
+          `所选文件不存在: ${dbPath}`);
+        return;
+      }
+
+      const result = await this._readCcSwitchDb(dbPath);
+      if (!result.success) {
+        this.bridge.callJs('backend_notification', 'error',
+          '读取数据库失败',
+          result.error || '未知错误');
+        return;
+      }
+
+      if (!result.providers || result.providers.length === 0) {
+        this.bridge.callJs('backend_notification', 'info',
+          '未找到 Claude 供应商',
+          '所选数据库中未包含 Claude 供应商配置');
+        return;
+      }
+
+      const previewData = { providers: result.providers };
+      this.bridge.callJs('import_preview_result', JSON.stringify(previewData));
+      this.output.appendLine(`[router] 从用户选择的 DB 读取到 ${result.count || result.providers.length} 个供应商`);
+    } catch (e) {
+      this.output.appendLine(`[router] open_file_chooser_for_cc_switch 异常: ${e && e.message}`);
+      this.bridge.callJs('backend_notification', 'error',
+        '文件选择失败',
+        e && e.message ? e.message : String(e));
+    }
+  }
+
+  /**
+   * 保存从前端导入确认对话框选中的供应商。
+   * 对齐 Java ProviderImportExportSupport.handleSaveImportedProviders。
+   */
+  _handleSaveImportedProviders(content) {
+    try {
+      let request;
+      try { request = JSON.parse(content); } catch (e) { return; }
+      const providers = Array.isArray(request.providers) ? request.providers : [];
+
+      if (!providers.length) {
+        this.output.appendLine('[router] save_imported_providers: 空列表，无操作');
+        return;
+      }
+
+      // 合并到现有列表：按 id 去重（后导入的覆盖先存在的同 id 项）
+      const existingById = new Map(this.providers.map((p) => [p.id, p]));
+      let importedCount = 0;
+      const now = Date.now();
+      for (const imported of providers) {
+        if (!imported || !imported.id) continue;
+        if (!imported.source) imported.source = 'cc-switch';
+        imported.updatedAt = now;
+        if (!existingById.has(imported.id)) {
+          imported.createdAt = imported.createdAt || now;
+        } else {
+          imported.createdAt = imported.createdAt || existingById.get(imported.id).createdAt;
+        }
+        existingById.set(imported.id, imported);
+        importedCount++;
+      }
+
+      // 重建有序列表：保留原顺序，新增的追加到末尾
+      const newIds = new Set(providers.map((p) => p.id));
+      const kept = this.providers.filter((p) => !newIds.has(p.id));
+      const merged = [...kept];
+      for (const imported of providers) {
+        if (imported && imported.id) merged.push(existingById.get(imported.id));
+      }
+      this.providers = merged;
+
+      // 持久化 + 刷新 UI
+      this._persistProviders();
+      this._emitProviders();
+
+      this.bridge.callJs('backend_notification', 'success',
+        '导入成功',
+        `已导入/更新 ${importedCount} 个供应商配置`);
+      this.output.appendLine(`[router] 已导入 ${importedCount} 个供应商`);
+    } catch (e) {
+      this.output.appendLine(`[router] save_imported_providers 异常: ${e && e.message}`);
+      this.bridge.callJs('backend_notification', 'error',
+        '导入保存失败',
+        e && e.message ? e.message : String(e));
     }
   }
 
@@ -753,6 +994,16 @@ class MessageRouter {
         this._emitProviders();
         break;
       }
+      // ===== Provider 导入：cc-switch =====
+      case 'preview_cc_switch_import':
+        this._handlePreviewCcSwitchImport();
+        break;
+      case 'open_file_chooser_for_cc_switch':
+        this._handleOpenFileChooserForCcSwitch();
+        break;
+      case 'save_imported_providers':
+        this._handleSaveImportedProviders(content);
+        break;
       case 'switch_provider':
         this._handleSwitchProvider(content);
         break;
@@ -1148,6 +1399,8 @@ class MessageRouter {
         // addHistoryMessage 期望 ClaudeMessage 对象（前端不做 JSON.parse），直接透传对象。
         this.bridge.callJs('addHistoryMessage', msg);
       }
+      // 恢复上次会话的模型名和 token 用量（否则 reset() 清零后前端始终显示 0%）
+      this._restoreTokenUsage();
       this.bridge.callJs('historyLoadComplete');
       this.output.appendLine(`[router] load_session: ${sessionId} 重放 ${messages.length} 条历史消息`);
     } catch (e) {
@@ -1155,6 +1408,30 @@ class MessageRouter {
       // 兜底释放 guard + 报错，前端不卡
       this.bridge.callJs('historyLoadComplete');
       this.bridge.callJs('addErrorMessage', `加载会话失败: ${e && e.message ? e.message : String(e)}`);
+    }
+  }
+
+  /**
+   * 从历史 JSONL 中恢复最近一次 token 用量，并推送到前端上下文百分比。
+   * 对齐 Java SessionMessageOrchestrator.restoreTokenUsage：扫描会话 JSONL 尾部 assistant
+   * 消息的 message.usage，按 input+output+cache_read+cache_creation 公式求和，以当前模型
+   * 的上下文窗口换算百分比后下发 onUsageUpdate。
+   */
+  _restoreTokenUsage() {
+    if (!this.cwd || !this.sessionId) return;
+    try {
+      const usage = historyService.findLastUsageFromRawMessages(this.cwd, this.sessionId);
+      if (!usage) {
+        this.output.appendLine('[router] 历史会话中未找到 usage 数据，上下文百分比保持 0%');
+        return;
+      }
+      const used = (usage.input_tokens || 0) + (usage.output_tokens || 0)
+        + (usage.cache_read_input_tokens || 0) + (usage.cache_creation_input_tokens || 0);
+      this.assembler.setModel(this._activeProviderModel() || this.model);
+      this.assembler._emitUsage(used);
+      this.output.appendLine(`[router] 已恢复历史用量: ${used} tokens (model=${this.assembler.currentModel})`);
+    } catch (e) {
+      this.output.appendLine(`[router] 恢复历史用量失败: ${e && e.message}`);
     }
   }
 
@@ -1448,6 +1725,12 @@ class MessageRouter {
     } finally {
       clearInterval(heartbeat);
       this._busy = false;
+      // 本轮回复完成后检查是否有待处理的自动 compact
+      if (this._pendingCompact) {
+        this._pendingCompact = false;
+        this.output.appendLine('[router] 本轮完成，执行 pending 自动 compact');
+        this._handleSend(JSON.stringify({ text: '/compact' }));
+      }
     }
   }
 
