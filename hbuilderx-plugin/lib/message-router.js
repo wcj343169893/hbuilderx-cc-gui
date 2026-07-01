@@ -870,6 +870,10 @@ class MessageRouter {
   dispatch(event, content) {
     switch (event) {
       case 'send_message':
+      // 带附件（图片/文件）时前端发的是 send_message_with_attachments（见 useMessageSender.ts）。
+      // 二者复用 _handleSend，内部按 payload.attachments 是否非空分流到 claude.sendWithAttachments。
+      // 缺此 case 会落 default 被静默丢弃 → _handleSend 从不触发 → loading 永不结束（发图卡死根因）。
+      case 'send_message_with_attachments':
         this._handleSend(content);
         break;
       case 'create_new_session':
