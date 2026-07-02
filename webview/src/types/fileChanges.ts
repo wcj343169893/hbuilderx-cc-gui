@@ -29,6 +29,6 @@ export interface FileChangeSummary {
   /** First reliable line range for file-level navigation */
   lineStart?: number;
   lineEnd?: number;
-  /** All edit operations for this file (for showMultiEditDiff) */
+  /** All edit operations for this file (used by openDiffViewer to build the side-by-side diff) */
   operations: EditOperation[];
 }

@@ -3,7 +3,6 @@ import {
   openBrowser,
   openClass,
   openFile,
-  showEditableDiff,
   showInteractiveDiff,
   undoFileChanges,
 } from './bridge';
@@ -58,7 +57,6 @@ describe('bridge navigation helpers', () => {
   });
 
   it('keeps traversal guards for mutating file APIs', () => {
-    showEditableDiff('../shared/utils.ts', [], 'M');
     showInteractiveDiff('../shared/utils.ts', 'next');
     undoFileChanges('../shared/utils.ts', 'M', []);
 

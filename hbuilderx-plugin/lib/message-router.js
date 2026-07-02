@@ -49,6 +49,7 @@ const LIST_FILES_SKIP_FILES = new Set(['.DS_Store', 'Thumbs.db', 'desktop.ini'])
 const DISABLED_PROVIDER_ID = '__disabled__';
 const LOCAL_SETTINGS_PROVIDER_ID = '__local_settings_json__';
 const CLI_LOGIN_PROVIDER_ID = '__cli_login__';
+const CODEX_CLI_LOGIN_PROVIDER_ID = '__codex_cli_login__';
 
 /**
  * 事件路由：把 webview 出站事件映射到 ai-bridge 调用，并把流式结果回灌前端。
@@ -251,6 +252,251 @@ class MessageRouter {
       await this.aiBridge.request('claude.resetRuntime', {});
     } catch (e) {
       this.output.appendLine(`[router] resetRuntime 失败（将于下次发送重建）: ${e && e.message}`);
+    }
+  }
+
+  // ===================== Codex 供应商管理 =====================
+  // 语义对齐 JetBrains 版 CodexProviderManager/CodexProviderOperations，但存储对齐 HBuilderX 自身架构：
+  // 唯一数据源是 ~/.codemoss/config.json 的 codex 段（ai-bridge config/api-config.js 的 getCodexRuntimeState 也读这里
+  // 决定 codex 运行时凭据），刻意不改写用户的 ~/.codex/{config.toml,auth.json}——与 claude 段不碰 ~/.claude/settings.json 对称。
+  // codex 段形态：{ providers:{<id>:{...}}, current:"<id|''|__codex_cli_login__>", localConfigAuthorized:bool, providerOrder:[] }
+  //
+  // 移植缺口修复：前端设置页初始化即发 get_codex_providers（loadCodexProviders → setCodexLoading(true)），
+  // 此前 dispatch 无对应 case，消息落 default 被静默丢弃 → 永不回 updateCodexProviders → codexLoading 永为 true
+  //（切到 Codex tab 底部一直转圈的根因，与 send_message_with_attachments 缺 case 同类）。
+
+  /** 读取整个 ~/.codemoss/config.json（不存在/坏 JSON 返回 {}）。 */
+  _readCodemossConfig() {
+    try {
+      const file = path.join(os.homedir(), '.codemoss', 'config.json');
+      const obj = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      return obj && typeof obj === 'object' ? obj : {};
+    } catch (e) {
+      return {};
+    }
+  }
+
+  /** 回写整个 config.json（须先读后改再写，避免抹掉 claude 等其它段）。 */
+  _writeCodemossConfig(config) {
+    const file = path.join(os.homedir(), '.codemoss', 'config.json');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(config, null, 2), 'utf-8');
+  }
+
+  /** 取（并按需初始化）config 的 codex 段，保证 providers 为对象。 */
+  _codexSection(config) {
+    if (!config.codex || typeof config.codex !== 'object') config.codex = {};
+    if (!config.codex.providers || typeof config.codex.providers !== 'object') config.codex.providers = {};
+    return config.codex;
+  }
+
+  /** provider 展示顺序：先 providerOrder 中仍存在的，再补其余 key（对齐 ProviderOrderHelper）。 */
+  _codexProviderOrder(codex) {
+    const order = [];
+    if (Array.isArray(codex.providerOrder)) {
+      for (const id of codex.providerOrder) {
+        if (codex.providers[id] && !order.includes(id)) order.push(id);
+      }
+    }
+    for (const id of Object.keys(codex.providers)) {
+      if (!order.includes(id)) order.push(id);
+    }
+    return order;
+  }
+
+  /**
+   * 构建前端 updateCodexProviders 期望的列表：顶部注入「Codex CLI 登录」虚拟卡，
+   * 其余按顺序附上，每项带 isActive（对齐 CodexProviderManager.getCodexProviders）。
+   */
+  _codexProvidersForUi() {
+    const config = this._readCodemossConfig();
+    const codex = this._codexSection(config);
+    const currentId = codex.current != null ? String(codex.current).trim() : '';
+    const cliAuthorized = codex.localConfigAuthorized === true;
+
+    const list = [];
+    // CLI Login 是虚拟 provider（不落 providers），仅在已授权且被选中时点亮 isActive。
+    list.push({
+      id: CODEX_CLI_LOGIN_PROVIDER_ID,
+      name: 'Codex CLI Login',
+      isActive: currentId === CODEX_CLI_LOGIN_PROVIDER_ID && cliAuthorized,
+      isCodexCliLoginProvider: true,
+    });
+
+    for (const id of this._codexProviderOrder(codex)) {
+      const item = { ...codex.providers[id] };
+      if (!item.id) item.id = id;
+      item.isActive = id === currentId;
+      list.push(item);
+    }
+    return list;
+  }
+
+  /** 回列表 + 当前项给前端（前端收到 updateCodexProviders 才会结束 codexLoading）。 */
+  _emitCodexProviders() {
+    const list = this._codexProvidersForUi();
+    this.bridge.callJs('updateCodexProviders', JSON.stringify(list));
+    const active = list.find((p) => p.isActive);
+    if (active) this.bridge.callJs('updateActiveCodexProvider', JSON.stringify(active));
+  }
+
+  /** add_codex_provider：content 为整个 provider 对象 JSON。 */
+  _handleAddCodexProvider(content) {
+    try {
+      const p = JSON.parse(content);
+      if (!p || !p.id) return;
+      const config = this._readCodemossConfig();
+      const codex = this._codexSection(config);
+      if (codex.providers[p.id]) {
+        this.bridge.callJs('showError', `Codex 供应商 id「${p.id}」已存在`);
+        return;
+      }
+      if (!p.createdAt) p.createdAt = Date.now();
+      codex.providers[p.id] = p;
+      this._writeCodemossConfig(config);
+      this._emitCodexProviders();
+    } catch (e) {
+      this.output.appendLine(`[router] add_codex_provider 异常: ${e && e.message}`);
+      this.bridge.callJs('showError', `添加 Codex 供应商失败：${e && e.message}`);
+    }
+  }
+
+  /** update_codex_provider：content 为 { id, updates }。updates 中某字段值为 null 表示删除该字段。 */
+  _handleUpdateCodexProvider(content) {
+    try {
+      const d = JSON.parse(content);
+      const id = d && d.id;
+      if (!id) return;
+      const updates = (d && d.updates) || {};
+      const config = this._readCodemossConfig();
+      const codex = this._codexSection(config);
+      const provider = codex.providers[id];
+      if (!provider) {
+        this.bridge.callJs('showError', `Codex 供应商 id「${id}」不存在`);
+        return;
+      }
+      for (const key of Object.keys(updates)) {
+        if (key === 'id') continue;
+        if (updates[key] === null) delete provider[key];
+        else provider[key] = updates[key];
+      }
+      this._writeCodemossConfig(config);
+      // 运行时每次 send 重新读 config.json，写完即对下一条消息生效，无需额外 apply 到 ~/.codex。
+      this._emitCodexProviders();
+    } catch (e) {
+      this.output.appendLine(`[router] update_codex_provider 异常: ${e && e.message}`);
+      this.bridge.callJs('showError', `更新 Codex 供应商失败：${e && e.message}`);
+    }
+  }
+
+  /** delete_codex_provider：content 为 { id }。删当前项时回退到剩余第一个（无则清空）。 */
+  _handleDeleteCodexProvider(content) {
+    try {
+      const d = JSON.parse(content);
+      const id = d && d.id;
+      if (!id) {
+        this.bridge.callJs('showError', '删除失败：缺少 Codex 供应商 id');
+        return;
+      }
+      const config = this._readCodemossConfig();
+      const codex = this._codexSection(config);
+      if (!codex.providers[id]) {
+        this.bridge.callJs('showError', `Codex 供应商 id「${id}」不存在`);
+        return;
+      }
+      delete codex.providers[id];
+      const currentId = codex.current != null ? String(codex.current).trim() : '';
+      if (id === currentId) {
+        const remain = Object.keys(codex.providers);
+        codex.current = remain.length ? remain[0] : '';
+      }
+      if (Array.isArray(codex.providerOrder)) {
+        codex.providerOrder = codex.providerOrder.filter((x) => x !== id);
+      }
+      this._writeCodemossConfig(config);
+      this._emitCodexProviders();
+    } catch (e) {
+      this.output.appendLine(`[router] delete_codex_provider 异常: ${e && e.message}`);
+      this.bridge.callJs('showError', `删除 Codex 供应商失败：${e && e.message}`);
+    }
+  }
+
+  /**
+   * switch_codex_provider：content 为 { id }。
+   * - id === __codex_cli_login__：授权读取本地 codex 登录态（置 localConfigAuthorized，不改任何文件）。
+   * - 普通 id：设 current；空串表示停用。
+   * codex 无 daemon 侧 runtime 缓存（每次 send 重新读 config.json），故切换后下一条消息自动生效，无需 resetRuntime。
+   */
+  _handleSwitchCodexProvider(content) {
+    try {
+      const d = JSON.parse(content);
+      const id = (d && d.id) || '';
+      const config = this._readCodemossConfig();
+      const codex = this._codexSection(config);
+
+      if (id === CODEX_CLI_LOGIN_PROVIDER_ID) {
+        codex.localConfigAuthorized = true;
+        codex.current = CODEX_CLI_LOGIN_PROVIDER_ID;
+        this._writeCodemossConfig(config);
+        this.bridge.callJs('showSwitchSuccess', '已启用「Codex CLI 登录」');
+        this._emitCodexProviders();
+        return;
+      }
+
+      if (id && !codex.providers[id]) {
+        this.bridge.callJs('showError', `Codex 供应商 id「${id}」不存在`);
+        return;
+      }
+      codex.current = id;
+      this._writeCodemossConfig(config);
+      const name = id && codex.providers[id] ? codex.providers[id].name : '';
+      this.bridge.callJs('showSwitchSuccess', name ? `已切换到「${name}」` : '已停用 Codex 供应商');
+      this._emitCodexProviders();
+    } catch (e) {
+      this.output.appendLine(`[router] switch_codex_provider 异常: ${e && e.message}`);
+      this.bridge.callJs('showError', `切换 Codex 供应商失败：${e && e.message}`);
+    }
+  }
+
+  /** sort_codex_providers：content 为 { orderedIds }。仅记录仍存在的 id 到 providerOrder。 */
+  _handleSortCodexProviders(content) {
+    try {
+      const d = JSON.parse(content);
+      const order = (d && d.orderedIds) || [];
+      if (!Array.isArray(order) || !order.length) return;
+      const config = this._readCodemossConfig();
+      const codex = this._codexSection(config);
+      codex.providerOrder = order.filter((id) => codex.providers[id]);
+      this._writeCodemossConfig(config);
+      this._emitCodexProviders();
+    } catch (e) {
+      this.output.appendLine(`[router] sort_codex_providers 异常: ${e && e.message}`);
+    }
+  }
+
+  /**
+   * revoke_codex_local_config_authorization：content 为 { fallbackProviderId }。
+   * 撤销本地 codex 配置授权；若当前正是 CLI 登录，回退到 fallback（存在则切之，否则停用）。
+   */
+  _handleRevokeCodexLocalConfigAuthorization(content) {
+    try {
+      const d = content ? JSON.parse(content) : {};
+      const fallbackProviderId = d && d.fallbackProviderId ? String(d.fallbackProviderId) : '';
+      const config = this._readCodemossConfig();
+      const codex = this._codexSection(config);
+      const currentId = codex.current != null ? String(codex.current).trim() : '';
+      const wasCliLoginActive = currentId === CODEX_CLI_LOGIN_PROVIDER_ID;
+
+      codex.localConfigAuthorized = false;
+      if (wasCliLoginActive) {
+        codex.current = fallbackProviderId && codex.providers[fallbackProviderId] ? fallbackProviderId : '';
+      }
+      this._writeCodemossConfig(config);
+      this.bridge.callJs('showSwitchSuccess', '已撤销 Codex 本地配置授权');
+      this._emitCodexProviders();
+    } catch (e) {
+      this.output.appendLine(`[router] revoke_codex_local_config_authorization 异常: ${e && e.message}`);
+      this.bridge.callJs('showError', `撤销 Codex 本地配置授权失败：${e && e.message}`);
     }
   }
 
@@ -1025,6 +1271,33 @@ class MessageRouter {
         }
         break;
       }
+      // ===== Codex 供应商管理（移植缺口修复：此前无对应 case → codexLoading 卡死）=====
+      case 'get_codex_providers':
+        this._emitCodexProviders();
+        break;
+      case 'get_active_codex_provider': {
+        const activeCodex = this._codexProvidersForUi().find((p) => p.isActive);
+        if (activeCodex) this.bridge.callJs('updateActiveCodexProvider', JSON.stringify(activeCodex));
+        break;
+      }
+      case 'add_codex_provider':
+        this._handleAddCodexProvider(content);
+        break;
+      case 'update_codex_provider':
+        this._handleUpdateCodexProvider(content);
+        break;
+      case 'delete_codex_provider':
+        this._handleDeleteCodexProvider(content);
+        break;
+      case 'switch_codex_provider':
+        this._handleSwitchCodexProvider(content);
+        break;
+      case 'sort_codex_providers':
+        this._handleSortCodexProviders(content);
+        break;
+      case 'revoke_codex_local_config_authorization':
+        this._handleRevokeCodexLocalConfigAuthorization(content);
+        break;
       // ===== 设置 → 基础配置 → 环境 =====
       case 'get_node_path':
         this._handleGetNodePath();
@@ -1153,14 +1426,15 @@ class MessageRouter {
         this._handleGetIdeTheme();
         break;
       // ===== 查看差异（Diff）=====
-      // 前端工具卡片的「查看差异」按钮发 show_diff（及编辑预览等变体）。IDEA 版用 DiffManager
-      // 打开原生对比视图；HBuilderX 无任意文本的原生 diff API，故落地为「把 before/after 写成
-      // 临时文件并各开一个编辑器 tab」供肉眼对比（保留扩展名以获得语法高亮）。
-      case 'show_diff':
-      case 'show_edit_full_diff':
-      case 'show_multi_edit_diff':
-      case 'show_edit_preview_diff':
-        this._handleShowDiff(event, content);
+      // 编辑区左右分栏 diff（custom editor）：把 {title,filePath,sections} 写成 .ccdiff 临时文件并
+      // openTextDocument 打开，HBuilderX 据 customEditors 声明在编辑器区渲染左右对比 tab
+      // （见 lib/diff-editor-provider.js）。前端 openDiffViewer 统一发此事件。
+      case 'open_diff_editor':
+        this._handleOpenDiffEditor(content);
+        break;
+      // ===== 上下文用量弹窗（移植缺口修复：此前无 case → 弹窗永久 loading）=====
+      case 'get_context_usage':
+        this._handleGetContextUsage(content);
         break;
       // ===== 历史会话（History）=====
       case 'load_history_data':
@@ -1787,55 +2061,168 @@ class MessageRouter {
   }
 
   /**
-   * 「查看差异」：把 before/after 两段文本写成临时文件并各开一个编辑器 tab 供对比。
-   * 移植自 IDEA SimpleDiffDisplayHandler（show_diff / show_edit_full_diff / show_multi_edit_diff /
-   * show_edit_preview_diff），但 HBuilderX 无原生 diff 视图 API，改为临时文件并排打开。
-   * @param {string} type 事件名
-   * @param {string} content JSON 载荷
+   * 编辑区左右分栏 diff：把差异数据写成 .ccdiff 临时文件并 openTextDocument 打开，
+   * 由 CcDiffEditorProvider（customEditors 声明 *.ccdiff）在编辑器区渲染。
+   * payload = { title, filePath, sections: [{label, before, after}] }。
+   * 同一目标文件复用同名 .ccdiff（覆盖内容）以免 tab 泛滥。
    */
-  _handleShowDiff(type, content) {
+  _handleOpenDiffEditor(content) {
     let json = {};
-    try { json = JSON.parse(content || '{}') || {}; } catch (e) {
-      this.output.appendLine(`[router] ${type} 载荷解析失败: ${e && e.message}`);
-      return;
-    }
-    const filePath = json.filePath || '';
-    let before = '';
-    let after = '';
+    try { json = JSON.parse(content || '{}') || {}; }
+    catch (e) { this._notifyDiff('error', '无法解析差异数据: ' + (e && e.message)); return; }
+
+    const rawSections = Array.isArray(json.sections) ? json.sections : [];
+    // 前端带来的界面主题（跟随「设置→基础配置→界面主题」）；非法/缺省则留空，由 provider 回退读编辑器 colorScheme。
+    const theme = (json.theme === 'light' || json.theme === 'dark') ? json.theme : '';
+    const fragmentSections = rawSections.map((s) => ({
+      label: (s && s.label) || '',
+      before: (s && s.before != null) ? String(s.before) : '',
+      after: (s && s.after != null) ? String(s.after) : '',
+    }));
+
+    // 尝试整文件左右对比：读磁盘当前内容为「后」，反向套用各处改动复原「前」（复用 show_multi_edit_diff 思路）。
+    // 成功→以单段整文件替代片段（未改动区由 provider 折叠）；读不到盘/未匹配到改动→回退片段更可靠。
+    const fullSection = this._buildFullFileSection(json.filePath || '', fragmentSections);
+
+    const data = {
+      title: json.title || (json.filePath ? path.basename(json.filePath) : '文件差异'),
+      filePath: json.filePath || '',
+      theme,
+      whole: !!fullSection,
+      sections: fullSection ? [fullSection] : fragmentSections,
+    };
+
     try {
-      if (type === 'show_diff') {
-        // EditToolBlock 直接传 old/new 内容（可能是片段，也可能是整文件）
-        before = json.oldContent != null ? json.oldContent : '';
-        after = json.newContent != null ? json.newContent : '';
-      } else if (type === 'show_edit_full_diff') {
-        const oldString = json.oldString || '';
-        const newString = json.newString || '';
-        if (json.originalContent != null && json.originalContent !== '') {
-          before = json.originalContent;
-          after = this._applyEdits(before, [{ oldString, newString, replaceAll: !!json.replaceAll }]);
-        } else {
-          before = oldString;
-          after = newString;
-        }
-      } else if (type === 'show_edit_preview_diff') {
-        // 以当前磁盘内容为「前」，依次套用 edits 得到「后」
-        const abs = this._resolveAbsPath(filePath);
-        before = (abs && fs.existsSync(abs)) ? fs.readFileSync(abs, 'utf-8') : '';
-        after = this._applyEdits(before, this._normalizeEdits(json.edits));
-      } else if (type === 'show_multi_edit_diff') {
-        // currentContent（或磁盘内容）为「后」，反向套用 edits 复原「前」
-        const abs = this._resolveAbsPath(filePath);
-        after = json.currentContent != null ? json.currentContent
-          : ((abs && fs.existsSync(abs)) ? fs.readFileSync(abs, 'utf-8') : '');
-        const edits = this._normalizeEdits(json.edits);
-        before = this._applyEdits(after, edits.slice().reverse().map((e) => ({
-          oldString: e.newString, newString: e.oldString, replaceAll: e.replaceAll,
+      const tmpDir = path.join(os.tmpdir(), 'cc-gui-diff');
+      fs.mkdirSync(tmpDir, { recursive: true });
+      const ext = path.extname(json.filePath || '');
+      const rawBase = path.basename(json.filePath || 'diff', ext) || 'diff';
+      // 文件名保留原扩展名（如 Foo.tsx.ccdiff），tab 名更可读；.ccdiff 后缀触发 custom editor。
+      const safeBase = (rawBase + ext).replace(/[^\w.\-]+/g, '_') || 'diff';
+      const f = path.join(tmpDir, safeBase + '.ccdiff');
+      fs.writeFileSync(f, JSON.stringify(data), 'utf-8');
+
+      const ws = this.hx && this.hx.workspace;
+      if (!ws || typeof ws.openTextDocument !== 'function') {
+        this._notifyDiff('error', '当前 HBuilderX 不支持 openTextDocument，无法打开差异');
+        return;
+      }
+      this.output.appendLine(`[diff-editor] 写入并打开: ${f} sections=${data.sections.length} whole=${data.whole}`);
+      Promise.resolve(ws.openTextDocument(f))
+        .then(() => this.output.appendLine(`[diff-editor] 已打开编辑区 diff: ${f}`))
+        .catch((e) => {
+          const msg = (e && e.message) || String(e);
+          this.output.appendLine(`[diff-editor] 打开失败: ${msg}`);
+          this._notifyDiff('error', '打开差异失败：' + msg);
+        });
+    } catch (e) {
+      const msg = (e && e.message) || String(e);
+      this.output.appendLine(`[diff-editor] 生成差异失败: ${msg}`);
+      this._notifyDiff('error', '生成差异失败：' + msg);
+    }
+  }
+
+  /**
+   * 由片段改动重建整文件左右对比：读磁盘当前内容为「后」全文，反向套用各处 edit 复原「前」全文。
+   * fragments = [{ before:oldString, after:newString }, ...]（顺序即改动应用顺序）。
+   * 返回 { label:'', before, after } 或 null（无 filePath/读不到盘/无有效改动/未匹配到改动时返回 null，
+   * 由调用方回退到片段展示，更可靠）。
+   */
+  _buildFullFileSection(filePath, fragments) {
+    try {
+      const abs = this._resolveAbsPath(filePath || '');
+      if (!abs || !fs.existsSync(abs)) return null;
+      const afterFull = fs.readFileSync(abs, 'utf-8');
+      // 超大文件不升级整文件对比：LCS O(m*n) 会拖垮渲染，且大文件里找几处改动意义有限；
+      // 回退片段（精确对应每处改动、体量小，provider 端对片段几乎无性能压力）。
+      const MAX_WHOLE_LINES = 1500;
+      const afterLines = afterFull.split('\n').length;
+      if (afterLines > MAX_WHOLE_LINES) {
+        this.output.appendLine(`[diff-editor] 文件过大(${afterLines}行>${MAX_WHOLE_LINES})，回退片段展示`);
+        return null;
+      }
+      const edits = (fragments || [])
+        .map((s) => ({ oldString: s.before || '', newString: s.after || '' }))
+        .filter((e) => e.oldString || e.newString);
+      if (!edits.length) return null;
+      // 各处改动的 oldString 都为空 → 视为新建文件，编辑前全文为空。
+      const isPureAdd = edits.every((e) => !e.oldString);
+      let beforeFull;
+      if (isPureAdd) {
+        beforeFull = '';
+      } else {
+        // 反向：把磁盘全文里的 newString 依次换回 oldString（顺序反转，同 show_multi_edit_diff）。
+        beforeFull = this._applyEdits(afterFull, edits.slice().reverse().map((e) => ({
+          oldString: e.newString, newString: e.oldString, replaceAll: false,
         })));
       }
+      if (beforeFull === afterFull) return null; // 未匹配到任何改动，回退片段
+      return { label: '', before: beforeFull, after: afterFull };
     } catch (e) {
-      this.output.appendLine(`[router] ${type} 计算 before/after 失败: ${e && e.message}`);
+      this.output.appendLine(`[diff-editor] 整文件重建失败，回退片段: ${e && e.message}`);
+      return null;
     }
-    this._openDiffTempFiles(filePath, before, after, json.title);
+  }
+
+  /**
+   * get_context_usage：前端点 token 百分比圆环时请求上下文用量分解。
+   * 调 daemon claude.getContextUsage（内部 SDK query.getContextUsage()，会 preconnect，无需先发消息），
+   * daemon 以一行 JSON `{success,data}` 经 onLine 回调返回。对齐 JetBrains ContextHandler：
+   * 后端不加工数据，成功回 showContextUsageDialog({data,requestId})，失败回 onContextUsageError。
+   *
+   * 移植缺口修复：此前无此 case，前端 openContextUsageDialog 后永不收到响应 → 弹窗永久卡「正在加载」。
+   *（前端 useDialogManagement 另加了超时兜底，二者互补：后端正常返回，异常时前端不永久卡。）
+   */
+  async _handleGetContextUsage(content) {
+    let req = {};
+    try { req = JSON.parse(content || '{}') || {}; } catch (e) { req = {}; }
+    const requestId = req.requestId ? String(req.requestId) : '';
+    const model = req.model ? String(req.model) : '';
+
+    const fail = (msg) => {
+      try {
+        if (requestId) this.bridge.callJs('onContextUsageError', msg, requestId);
+        else this.bridge.callJs('onContextUsageError', msg);
+      } catch (e) { /* 通知不可用则忽略 */ }
+    };
+
+    if (!this.aiBridge || !this.aiBridge.proc) {
+      fail('Claude 服务未就绪，请先发送一条消息后再查看上下文用量');
+      return;
+    }
+
+    try {
+      await this._ensureCwd();
+      const params = { sessionId: this.sessionId || '', cwd: this.cwd || '', model };
+      let data = null;
+      let errMsg = null;
+      // 结果以一行 JSON 经 onLine 回调抵达（getContextUsagePersistent 里的 console.log），
+      // 标记行/日志行不以 '{' 开头或解析不出 data/success，会被跳过。
+      const done = await this.aiBridge.request('claude.getContextUsage', params, (line) => {
+        if (typeof line !== 'string') return;
+        const s = line.trim();
+        if (s.charAt(0) !== '{') return;
+        let obj;
+        try { obj = JSON.parse(s); } catch (e) { return; }
+        if (!obj || typeof obj !== 'object') return;
+        if (obj.success === false) { errMsg = obj.error || 'getContextUsage 失败'; return; }
+        if (obj.data !== undefined) { data = obj.data; }
+      });
+      if (!data && !errMsg && done && done.success === false) {
+        errMsg = done.error || 'getContextUsage 调用失败';
+      }
+
+      if (data) {
+        const payload = requestId ? { data, requestId } : { data };
+        this.bridge.callJs('showContextUsageDialog', JSON.stringify(payload));
+      } else {
+        this.output.appendLine(`[router] get_context_usage 无数据: ${errMsg || '(空)'}`);
+        fail(errMsg || '未获取到上下文使用情况');
+      }
+    } catch (e) {
+      this.output.appendLine(`[router] get_context_usage 异常: ${e && e.message}`);
+      fail(`获取上下文使用情况失败：${e && e.message}`);
+    }
   }
 
   /** 顺序套用 edits（{oldString,newString,replaceAll}）到 content，返回结果。 */
@@ -1855,48 +2242,6 @@ class MessageRouter {
     return out;
   }
 
-  /** 把前端 edits 数组归一为 {oldString,newString,replaceAll}。 */
-  _normalizeEdits(edits) {
-    if (!Array.isArray(edits)) return [];
-    return edits.map((e) => ({
-      oldString: (e && (e.oldString != null ? e.oldString : e.old_string)) || '',
-      newString: (e && (e.newString != null ? e.newString : e.new_string)) || '',
-      replaceAll: !!(e && (e.replaceAll || e.replace_all)),
-    }));
-  }
-
-  /**
-   * 把 before/after 写入临时文件并各开一个编辑器 tab。保留原文件扩展名以获得语法高亮。
-   * HBuilderX 无原生对比视图，故只能并排打开两个 tab（≈ IDEA DiffManager 的退化版）。
-   */
-  _openDiffTempFiles(filePath, before, after, title) {
-    try {
-      const tmpDir = path.join(os.tmpdir(), 'cc-gui-diff');
-      fs.mkdirSync(tmpDir, { recursive: true });
-      const ext = path.extname(filePath || '') || '.txt';
-      const rawBase = path.basename(filePath || 'file', ext) || 'file';
-      const safeBase = rawBase.replace(/[^\w.\-]+/g, '_') || 'file';
-      const beforePath = path.join(tmpDir, `${safeBase}.before${ext}`);
-      const afterPath = path.join(tmpDir, `${safeBase}.after${ext}`);
-      fs.writeFileSync(beforePath, before == null ? '' : String(before), 'utf-8');
-      fs.writeFileSync(afterPath, after == null ? '' : String(after), 'utf-8');
-
-      // 先开「前」，再开「后」（后开者获得焦点）。openTextDocument 返回 Promise。
-      Promise.resolve(this.hx.window.openTextDocument(beforePath))
-        .then(() => this.hx.window.openTextDocument(afterPath))
-        .then(() => {
-          this.output.appendLine(`[router] show_diff 已打开对比临时文件: ${safeBase}${ext}`);
-          try {
-            const name = title || `${safeBase}${ext}`;
-            this.hx.window.setStatusBarMessage(`已打开「${name}」修改前/后对比`, 4000);
-          } catch (e) { /* setStatusBarMessage 不可用则忽略 */ }
-        })
-        .catch((e) => this.output.appendLine(`[router] show_diff 打开临时文件失败: ${e && e.message}`));
-    } catch (e) {
-      this.output.appendLine(`[router] show_diff 写临时文件失败: ${e && e.message}`);
-    }
-  }
-
   /**
    * 打开文件并（best-effort）定位行。
    * - HBuilderX API（核实自 hbuilderx-language-services 的 extension_js.d.ts 与官方文档）：
@@ -1907,14 +2252,25 @@ class MessageRouter {
   _handleOpenFile(content) {
     try {
       const { filePath, line, endLine } = this._parsePathWithLine(content);
-      const abs = this._resolveAbsPath(filePath);
+      let abs = this._resolveAbsPath(filePath);
       if (!abs) {
         this.output.appendLine(`[router] open_file 无法解析路径（cwd 为空？）: ${content}`);
         return;
       }
       if (!fs.existsSync(abs)) {
-        this.output.appendLine(`[router] open_file 文件不存在: ${abs}`);
-        return;
+        // 裸文件名/相对路径在 cwd 根不存在 → 项目内递归查找同名文件后打开。
+        // 思考过程里的 <a data-linkify="file">App.vue</a> 这类引用常是裸文件名（不在项目根），
+        // 直接按 cwd 拼路径会 miss，导致「点了没反应」（open_file 静默返回）。
+        const found = this._findFileInProject(filePath);
+        if (!found) {
+          this.output.appendLine(`[router] open_file 文件不存在（项目内也未找到）: ${abs}`);
+          try {
+            this.bridge.callJs('addToast', `项目内未找到「${filePath}」`, 'warning');
+          } catch (e) { /* 通知不可用则忽略 */ }
+          return;
+        }
+        this.output.appendLine(`[router] open_file 在项目内定位到: ${found}（原始引用: ${filePath}）`);
+        abs = found;
       }
 
       // window.openTextDocument 返回 TextEditor（workspace.* 只返回 TextDocument，拿不到光标控制）
@@ -1936,6 +2292,38 @@ class MessageRouter {
     } catch (e) {
       this.output.appendLine(`[router] open_file 异常: ${e && e.message}`);
     }
+  }
+
+  /**
+   * 在项目（cwd）内递归查找与 relPath 匹配的真实文件，返回绝对路径（找不到返回 null）。
+   * 用于「裸文件名/相对路径」链接在 cwd 根不存在时的兜底定位（如思考过程里的 App.vue）。
+   * 优先「相对路径后缀完全匹配」（如 src/App.vue），其次「文件名(basename)匹配」；
+   * 多个候选取最浅层的第一个。复用 list_files 的递归扫描能力（同样跳过 node_modules 等噪声目录）。
+   * @param {string} relPath
+   * @returns {string|null}
+   */
+  _findFileInProject(relPath) {
+    if (!this.cwd || typeof relPath !== 'string' || !relPath) return null;
+    const norm = relPath.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '');
+    const wantBase = norm.split('/').pop();
+    // 只处理带扩展名的文件引用；无扩展名（如目录/类名）不在此兜底
+    if (!wantBase || !wantBase.includes('.')) return null;
+    const wantBaseLower = wantBase.toLowerCase();
+    const normLower = norm.toLowerCase();
+
+    // 按 basename 子串扫描，再精确过滤出 basename 完全相等的文件
+    const files = this._scanFilesRecursive(this.cwd, this.cwd, wantBaseLower, 0, [])
+      .filter((f) => f.type === 'file' && f.name.toLowerCase() === wantBaseLower);
+    if (!files.length) return null;
+
+    // 优先相对路径后缀完全匹配（norm='src/App.vue' 命中 path='src/App.vue'）
+    const suffixMatch = files.find((f) => {
+      const p = f.path.toLowerCase();
+      return p === normLower || p.endsWith('/' + normLower);
+    });
+    const picked = suffixMatch
+      || files.slice().sort((a, b) => a.path.split('/').length - b.path.split('/').length)[0];
+    return path.normalize(picked.absolutePath);
   }
 
   /**

@@ -93,6 +93,25 @@ export function useDialogManagement({ t }: UseDialogManagementOptions): UseDialo
   const [contextUsageIsLoading, setContextUsageIsLoading] = useState(false);
   const [contextUsageData, setContextUsageData] = useState<ContextUsageData | null>(null);
   const contextUsageRequestIdRef = useRef<string | null>(null);
+  // Timeout guard: if the backend never answers get_context_usage (dropped bridge
+  // message, daemon stuck, no active runtime), the dialog would otherwise spin on
+  // "Loading..." forever. Close it and toast after this budget.
+  const contextUsageTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const CONTEXT_USAGE_TIMEOUT_MS = 30000;
+
+  const clearContextUsageTimeout = useCallback(() => {
+    if (contextUsageTimeoutRef.current) {
+      clearTimeout(contextUsageTimeoutRef.current);
+      contextUsageTimeoutRef.current = null;
+    }
+  }, []);
+
+  // Cleanup on unmount
+  useEffect(() => () => {
+    if (contextUsageTimeoutRef.current) {
+      clearTimeout(contextUsageTimeoutRef.current);
+    }
+  }, []);
 
   // Sync refs with state
   useEffect(() => {
@@ -316,31 +335,53 @@ export function useDialogManagement({ t }: UseDialogManagementOptions): UseDialo
   }, []);
 
   const openContextUsageDialog = useCallback((requestId?: string | null, loading = true) => {
-    contextUsageRequestIdRef.current = requestId ?? null;
+    const rid = requestId ?? null;
+    contextUsageRequestIdRef.current = rid;
     setContextUsageData(null);
     setContextUsageIsLoading(loading);
     setContextUsageDialogOpen(true);
-  }, []);
+
+    clearContextUsageTimeout();
+    if (loading) {
+      contextUsageTimeoutRef.current = setTimeout(() => {
+        contextUsageTimeoutRef.current = null;
+        // Only fire if this exact request is still pending (not superseded/answered/closed).
+        if (contextUsageRequestIdRef.current !== rid) {
+          return;
+        }
+        contextUsageRequestIdRef.current = null;
+        setContextUsageDialogOpen(false);
+        setContextUsageIsLoading(false);
+        setContextUsageData(null);
+        window.addToast?.(
+          t('contextUsage.timeout', { defaultValue: '获取上下文使用情况超时，请稍后重试' }),
+          'warning',
+        );
+      }, CONTEXT_USAGE_TIMEOUT_MS);
+    }
+  }, [clearContextUsageTimeout, t]);
 
   const updateContextUsageData = useCallback((requestId: string | null | undefined, data: ContextUsageData) => {
     if (!isCurrentContextUsageRequest(requestId)) {
       return false;
     }
+    clearContextUsageTimeout();
     setContextUsageIsLoading(false);
     setContextUsageData(data);
     return true;
-  }, [isCurrentContextUsageRequest]);
+  }, [isCurrentContextUsageRequest, clearContextUsageTimeout]);
 
   const closeContextUsageDialog = useCallback((requestId?: string | null) => {
     if (!isCurrentContextUsageRequest(requestId)) {
       return false;
     }
+    clearContextUsageTimeout();
     contextUsageRequestIdRef.current = null;
     setContextUsageDialogOpen(false);
     setContextUsageIsLoading(false);
     setContextUsageData(null);
     return true;
-  }, [isCurrentContextUsageRequest]);
+  }, [isCurrentContextUsageRequest, clearContextUsageTimeout]);
 
   return {
     // Permission dialog

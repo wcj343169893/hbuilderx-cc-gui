@@ -1,7 +1,8 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ToolInput, ToolResultBlock } from '../../types';
-import { openFile, showDiff, refreshFile } from '../../utils/bridge';
+import { openFile, refreshFile } from '../../utils/bridge';
+import { openDiffViewer } from '../../utils/diffViewer';
 import { getFileIcon } from '../../utils/fileIcons';
 import { resolveToolTarget, getToolLineInfo } from '../../utils/toolPresentation';
 import { normalizeToolInput } from '../../utils/toolInputNormalization';
@@ -356,7 +357,12 @@ const EditToolGroupBlock = ({ items }: EditToolGroupBlockProps) => {
 
   const handleShowDiff = (item: EditItem, e: React.MouseEvent) => {
     e.stopPropagation();
-    showDiff(item.openPath, item.oldString, item.newString, t('tools.editPrefix', { fileName: item.fileName }));
+    // HBuilderX 无原生 diff 视图 API，改为在 webview 内自建左右分栏对比弹窗（DiffViewerModal）。
+    openDiffViewer({
+      title: t('tools.editPrefix', { fileName: item.fileName }),
+      filePath: item.openPath,
+      sections: [{ before: item.oldString, after: item.newString }],
+    });
   };
 
   const handleRefresh = (filePath: string, e: React.MouseEvent) => {

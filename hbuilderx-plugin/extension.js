@@ -15,6 +15,7 @@ const path = require('path');
 const hx = require('hbuilderx');
 const { createCcGuiWebView } = require('./lib/webview-host');
 const { MessageRouter } = require('./lib/message-router');
+const { CcDiffEditorProvider } = require('./lib/diff-editor-provider');
 
 const VIEW_ID = 'ccgui.chatView';
 const CONTAINER_ID = 'ccgui.container';
@@ -181,6 +182,16 @@ function activate(context) {
       output.appendLine(`[ccgui] addFile 异常: ${err && err.message}`);
     }
   });
+
+  // 编辑区自定义 diff 编辑器：打开 *.ccdiff（内容为 {title,sections} 的 JSON）→ HBuilderX 在
+  // 编辑器区建 WebViewPanel tab → 回调 resolveCustomEditor 渲染左右分栏 diff。
+  // 触发方式对齐官方示例：workspace.openTextDocument（见 message-router 的 _handleOpenDiffEditor）。
+  try {
+    hx.window.registerCustomEditorProvider('ccgui.diffEditor', new CcDiffEditorProvider(output));
+    output.appendLine('[ccgui] 已注册编辑区 diff 自定义编辑器 provider');
+  } catch (e) {
+    output.appendLine(`[ccgui] 注册 diff provider 失败: ${e && e.message}`);
+  }
 
   if (context && context.subscriptions) {
     context.subscriptions.push(openCmd, sendSelectionCmd, addFileCmd);

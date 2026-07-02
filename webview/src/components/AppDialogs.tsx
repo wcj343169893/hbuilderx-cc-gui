@@ -14,6 +14,7 @@ import { CHANGELOG_DATA } from '../version/changelog';
 import { useDialogs } from '../contexts/DialogContext';
 import { useUIState } from '../contexts/UIStateContext';
 import ContextUsageDialog from './ContextUsageDialog';
+import DiffViewerModal from './DiffViewer/DiffViewerModal';
 import { DEFAULT_PERMISSION_DIALOG_TIMEOUT_SECONDS } from '../utils/permissionDialogTimeout';
 import { setSkipNewSessionConfirm } from '../utils/skipNewSessionConfirm';
 
@@ -210,6 +211,7 @@ export const AppDialogs = ({
           onCompact={onCompactContext}
         />
       ) : null}
+      <DiffViewerModal />
     </>
   );
 };

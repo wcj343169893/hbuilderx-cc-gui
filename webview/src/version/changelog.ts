@@ -13,6 +13,26 @@ export interface ChangelogEntry {
 
 export const CHANGELOG_DATA: ChangelogEntry[] = [
   {
+    version: '0.2.0',
+    date: '2026-07-02',
+    content: {
+      en: `✨ Features / Improvements
+- "View diff" now shows a full-file side-by-side comparison; unchanged regions are folded and expand on click
+- Diff view theme follows Settings → Basic Config → UI Theme
+- Large-file diff performance: very large files fall back to a fast comparison to avoid freezing
+
+🛠 Other
+- Remove internal test menu; clean up legacy diff temp-file logic`,
+      zh: `✨ 新功能 / 优化
+- 「查看差异」升级为整文件左右对比，未改动区自动折叠、可点击展开
+- 差异视图主题跟随「设置 → 基础配置 → 界面主题」
+- 大文件差异性能优化：超大文件自动降级为快速对比，避免卡顿
+
+🛠 其他
+- 移除内部测试菜单，清理旧的差异临时文件逻辑`,
+    },
+  },
+  {
     version: '0.1.9',
     date: '2026-06-27',
     content: {

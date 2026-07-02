@@ -3,7 +3,8 @@ import type React from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import type { FileChangeSummary } from '../../types';
-import { showEditableDiff, openFile } from '../../utils/bridge';
+import { openFile } from '../../utils/bridge';
+import { openDiffViewer } from '../../utils/diffViewer';
 import FileIcon from './FileIcon';
 
 interface FileChangesListProps {
@@ -80,7 +81,7 @@ const FileChangeRow = memo(({ fileChange, isUndoing, onOpen, onShowDiff, onUndo,
       {/* Actions */}
       <div className="file-change-actions">
         <button
-          className="file-change-action-btn diff-btn"
+          className="file-change-action-btn diff-btn tests"
           onClick={handleShowDiff}
           title={t('statusPanel.showDiff')}
         >
@@ -120,15 +121,23 @@ const FileChangesList = memo(({
   }, []);
 
   const handleShowDiff = useCallback((fileChange: FileChangeSummary) => {
-    const operations = fileChange.operations.map((op) => ({
-      oldString: op.oldString,
-      newString: op.newString,
-      replaceAll: op.replaceAll,
-    }));
-    // Use editable diff view for selective accept/reject of changes
-    const status = fileChange.status === 'A' ? 'A' : 'M';
-    showEditableDiff(fileChange.filePath, operations, status);
-  }, []);
+    // HBuilderX 无原生 diff 视图 API（executeCommand 不能传参），改为在 webview 内
+    // 自建左右分栏对比弹窗（DiffViewerModal）。operations 里已带每处改动的 old/new，
+    // 无需后端补内容，故纯前端即可展示。
+    const ops = fileChange.operations || [];
+    const sections = ops.length > 0
+      ? ops.map((op, i) => ({
+          label: t('diffViewer.editN', { index: i + 1, defaultValue: `第 ${i + 1} 处修改` }),
+          before: op.oldString ?? '',
+          after: op.newString ?? '',
+        }))
+      : [{ before: '', after: '' }];
+    openDiffViewer({
+      title: fileChange.fileName || fileChange.filePath,
+      filePath: fileChange.filePath,
+      sections,
+    });
+  }, [t]);
 
   if (fileChanges.length === 0) {
     return <div className="status-panel-empty">{t('statusPanel.noFileChanges')}</div>;
