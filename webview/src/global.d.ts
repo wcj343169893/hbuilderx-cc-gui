@@ -33,6 +33,12 @@ interface Window {
   updateStatus?: (text: string) => void;
 
   /**
+   * Update the DeepSeek off-peak execution queue list (JSON array of
+   * { id, text, difficulty, project, enqueuedAt }). Rendered by DeepseekQueuePanel.
+   */
+  updateDeepseekQueue?: (json: string) => void;
+
+  /**
    * Show loading indicator
    */
   showLoading?: (value: string | boolean) => void;

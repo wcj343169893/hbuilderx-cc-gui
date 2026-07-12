@@ -66,6 +66,33 @@ function getModelContextLimit(model) {
   return MODEL_CONTEXT_LIMITS[model] != null ? MODEL_CONTEXT_LIMITS[model] : 200000;
 }
 
+/**
+ * 单个内容块内字符串字段的最大保留长度。tool_use.input（如 Write 的整份文件）/ tool_result.content
+ * （如 Read 整个文件、命令全部输出）可能高达数百 KB~数 MB；会话装配器把它们**长期保留**在 this.messages
+ * 里，且每次 updateMessages 都全量 JSON.stringify —— 长会话下累积到 GB 级，撑爆插件宿主 V8 堆（~4GB）
+ * 导致 OOM 崩溃。故在**入库时**截断过长字符串，兜住内存峰值与每次推送的序列化体积。
+ */
+const MAX_BLOCK_STRING = 20000;
+
+/**
+ * 递归截断对象/数组中过长的字符串字段，返回**新副本**（不改原对象）。
+ * 这些块都是 JSON（无循环引用），故不做环检测。
+ */
+function capDeepStrings(value, maxLen) {
+  if (typeof value === 'string') {
+    return value.length > maxLen
+      ? value.slice(0, maxLen) + `\n…[内容过长已截断，原 ${value.length} 字符]`
+      : value;
+  }
+  if (Array.isArray(value)) return value.map((v) => capDeepStrings(v, maxLen));
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const k of Object.keys(value)) out[k] = capDeepStrings(value[k], maxLen);
+    return out;
+  }
+  return value;
+}
+
 class ClaudeSessionAssembler {
   /**
    * @param {{ callJs: (fn: string, ...args: any[]) => void }} jsTarget
@@ -74,6 +101,12 @@ class ClaudeSessionAssembler {
   constructor(jsTarget, output) {
     this.js = jsTarget;
     this.output = output || { appendLine() {} };
+    // 用 Date.now() 为序列号播种（见 reset 的说明）：assembler 会随 router 每次重建而重建，
+    // 而前端 webview（globalThis 复用）不随之重置 __minAcceptedUpdateSequence。若新实例从 1 起，
+    // 其 updateMessages 会因 seq 落后于前端累计的高水位被整批丢弃——表现为「消息/分析过程不显示
+    // 但后台仍在执行」（崩溃/热升级后重开历史会话发消息即触发）。以毫秒时间戳起步可保证新实例
+    // 的序列号始终高于任何旧实例，无需前端配合复位。
+    this._seq = Date.now();
     this.reset();
   }
 
@@ -90,9 +123,15 @@ class ClaudeSessionAssembler {
     // 序列号必须**全生命周期单调递增、绝不归零**：前端 __minAcceptedUpdateSequence 只增不减，
     // 归零会让新会话的 updateMessages 因 seq 落后被整批丢弃（切 provider/model、/clear 都走 reset）。
     // 对齐 IDEA StreamMessageCoalescer.resetStreamState 的 `++updateSequence`（不是置 0）。
-    this._seq = (this._seq | 0) + 1;
+    // 注意：不能用 `| 0`——构造时已用 Date.now() 播种（~1.75e12 超出 32 位），按位或会截断成错误值。
+    this._seq = (Number.isFinite(this._seq) ? this._seq : 0) + 1;
     // resume 全量回放去重：记录已 push 过的 tool_result 的 tool_use_id，避免历史 tool_result 被重复 push。
     this._seenToolResultIds = new Set();
+    // 全量推送节流状态（见 _pushMessagesThrottled）：流式高频事件（thinking delta 每 token）合并推送，
+    // 避免每个 token 都 JSON.stringify 整个消息列表（含历史大 tool_result）→ O(n²) 内存/CPU 尖峰（内存溢出根因）。
+    if (this._pushTimer != null) { try { clearTimeout(this._pushTimer); } catch (e) { /* ignore */ } }
+    this._pushTimer = null;
+    this._pushPending = false;
     // 上下文用量：当前模型（决定上下文窗口）+ 最近一次累计 tokens（用于模型切换时按新窗口重算）
     this.currentModel = '';
     this.lastUsedTokens = 0;
@@ -235,7 +274,9 @@ class ClaudeSessionAssembler {
     this._applyThinkingDeltaToRaw(delta);
     this.thinkingSegmentActive = true;
     this.js.callJs('onThinkingDelta', delta);
-    this._pushMessages();
+    // 增量已通过 onThinkingDelta 送达前端；全量 updateMessages 仅需节流补一份最新快照即可，
+    // 无需每个 thinking token 都全量序列化（前端本就用 rAF 合并、只取最新一帧）。
+    this._pushMessagesThrottled();
   }
 
   _handleSessionId(id) {
@@ -322,7 +363,8 @@ class ClaudeSessionAssembler {
         if (block && block.type === 'tool_use') {
           const exists = curContent.some((b) => b && b.type === 'tool_use' && b.id === block.id);
           if (!exists) {
-            curContent.push(block);
+            // 截断超大 input（如 Write 整份文件）后再长期保留，防止内存累积撑爆宿主堆。
+            curContent.push(capDeepStrings(block, MAX_BLOCK_STRING));
             this.output.appendLine(`[tool_use] ${block.name}`);
           }
         }
@@ -344,7 +386,8 @@ class ClaudeSessionAssembler {
       const ids = this._toolResultIdsOf(content);
       if (ids.length > 0 && ids.every((id) => this._seenToolResultIds.has(id))) return;
       for (const id of ids) this._seenToolResultIds.add(id);
-      this.messages.push({ type: 'user', content: '[tool_result]', timestamp: Date.now(), raw: userMsg });
+      // 截断超大 tool_result 内容（如 Read 整个文件/命令全部输出）后再入库，避免内存累积。
+      this.messages.push({ type: 'user', content: '[tool_result]', timestamp: Date.now(), raw: capDeepStrings(userMsg, MAX_BLOCK_STRING) });
       this._pushMessages();
       return;
     }
@@ -382,7 +425,8 @@ class ClaudeSessionAssembler {
     // resume 回放去重：同一 tool_use_id 的结果只 push 一次（实时 [TOOL_RESULT] 与历史重放共用判据）。
     if (this._seenToolResultIds.has(block.tool_use_id)) return;
     this._seenToolResultIds.add(block.tool_use_id);
-    const raw = { type: 'user', message: { content: [block] } };
+    // 截断超大 tool_result 内容后再入库（长期保留 + 每次全量序列化，是宿主 OOM 的主因）。
+    const raw = { type: 'user', message: { content: [capDeepStrings(block, MAX_BLOCK_STRING)] } };
     this.messages.push({ type: 'user', content: '[tool_result]', timestamp: Date.now(), raw });
     this._pushMessages();
   }
@@ -473,12 +517,31 @@ class ClaudeSessionAssembler {
 
   /** 构建并下发 updateMessages（形态对齐 MessageJsonConverter.convertMessagesToJson）。 */
   _pushMessages() {
+    // 立即全量推送即已是最新快照：取消任何挂起的节流定时器，避免其稍后再推一份陈旧快照。
+    if (this._pushTimer != null) { try { clearTimeout(this._pushTimer); } catch (e) { /* ignore */ } this._pushTimer = null; }
+    this._pushPending = false;
     const arr = this.messages.map((m) => {
       const o = { type: String(m.type).toLowerCase(), timestamp: m.timestamp, content: m.content || '' };
       if (m.raw) o.raw = this._trimRaw(m.raw);
       return o;
     });
     this.js.callJs('updateMessages', JSON.stringify(arr), String(++this._seq));
+  }
+
+  /**
+   * 节流版全量推送：流式期间的高频事件（尤其 thinking delta 每 token）经此合并，
+   * 避免每次都对整个消息列表（含历史大 tool_result）做 JSON.stringify，防止宿主侧 O(n²)
+   * CPU/内存尖峰（会话界面内存溢出根因之一）。非流式时退化为立即推送以保证时序。
+   * 采用 leading+trailing 节流（窗口 80ms）：首次立即推，窗口内的后续调用合并成一次尾推。
+   */
+  _pushMessagesThrottled() {
+    if (!this.isStreaming) { this._pushMessages(); return; }
+    if (this._pushTimer != null) { this._pushPending = true; return; }
+    this._pushMessages(); // leading edge（_pushMessages 会清零 timer/pending）
+    this._pushTimer = setTimeout(() => {
+      this._pushTimer = null;
+      if (this._pushPending) this._pushMessages(); // trailing edge：窗口内有被合并的调用则补推最新
+    }, 80);
   }
 
   /** 对应 MessageJsonConverter.buildTransportRaw：仅保留前端需要的字段。 */

@@ -13,6 +13,42 @@ export interface ChangelogEntry {
 
 export const CHANGELOG_DATA: ChangelogEntry[] = [
   {
+    version: '0.2.1',
+    date: '2026-07-12',
+    content: {
+      en: `✨ Features
+- DeepSeek peak-pricing guard: when sending on DeepSeek during peak hours (Beijing 9-12 / 14-18, 2× price), a dialog lets you choose Plan / Queue for off-peak / Send now (pick thinking depth) / Cancel
+- Off-peak auto-execution of the queue: each task runs in a fresh session (no context bloat), model auto-picked by difficulty, execution permission mode selectable at queue time
+- In-chat "DeepSeek off-peak queue" panel (view / remove / clear)
+- Auto-retry on transient send errors (e.g. "API request failed", timeout, 5xx, network); configurable count/interval
+- Status-bar icon tooltip shows the current version
+
+🐛 Fixes
+- Fix plugin-host out-of-memory crash / freeze on long sessions (cap oversized tool_use/tool_result content, e.g. whole files & command output)
+- Fix: after a crash, reopening a history session then sending showed nothing while still executing (message sequence mismatch)
+- Fix cross-project / cross-session analysis-stream bleed (runtimeSessionEpoch isolation)
+
+🛠 Improvements
+- New session with a temp file active now keeps the last project path
+- Throttle thinking-stream full refreshes; add a local index cache for the history list`,
+      zh: `✨ 新功能
+- DeepSeek 峰谷定价「高峰守卫」：高峰时段（北京时间 9-12 / 14-18，2 倍价）用 DeepSeek 发送时弹窗选择——制定开发计划 / 加入队列（平价自动执行）/ 立即发送（选思考深度）/ 取消
+- 平价时段自动分批执行队列：每个任务用全新会话执行（避免上下文膨胀），按难度自动选模型，入队时可指定执行权限模式
+- 会话界面「DeepSeek 平价执行队列」面板（查看 / 移除 / 清空）
+- 发送遇瞬时错误（如「API request failed」、超时、5xx、网络中断）自动重试，次数/间隔可在设置里配置
+- 底部状态栏图标悬浮提示显示当前版本号
+
+🐛 修复
+- 修复长会话（大上下文 + 大量文件读写/命令输出）导致插件宿主内存耗尽而卡死/崩溃：对超大的 tool_use/tool_result 内容（整份文件、命令全部输出等）截断
+- 修复上次会话崩溃后重开历史会话再发消息时，消息区不显示、却仍在后台执行的问题（消息序列号错位）
+- 修复不同项目 / 会话的分析流互相串扰（runtimeSessionEpoch 运行时隔离）
+
+🛠 优化
+- 新建会话时若正编辑临时文件，沿用上一次的项目路径
+- 思考流全量刷新改为节流；历史会话列表新增本地索引缓存`,
+    },
+  },
+  {
     version: '0.2.0',
     date: '2026-07-02',
     content: {

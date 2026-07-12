@@ -31,6 +31,7 @@ import type { Attachment, ChatInputBoxHandle } from './components/ChatInputBox/t
 import { apply1MContextSuffix } from './components/ChatInputBox/types';
 import { ToastContainer } from './components/Toast';
 import { ChatHeader } from './components/ChatHeader';
+import DeepseekQueuePanel, { type DeepseekQueueItem } from './components/DeepseekQueuePanel';
 import { ChatScreen } from './components/ChatScreen';
 import type { MessageListRevealHandle } from './components/ConversationSearch/types';
 import { useSubagentContextValues } from './contexts/SubagentContext';
@@ -90,6 +91,22 @@ const App = () => {
 
   // ── Permission dialog timeout (synced with backend config) ──
   const [permissionDialogTimeoutSeconds, setPermissionDialogTimeoutSeconds] = useState(DEFAULT_PERMISSION_DIALOG_TIMEOUT_SECONDS);
+
+  // ── DeepSeek 平价执行队列（后端经 window.updateDeepseekQueue 下发；面板展示+管理）──
+  const [deepseekQueue, setDeepseekQueue] = useState<DeepseekQueueItem[]>([]);
+  useEffect(() => {
+    window.updateDeepseekQueue = (json: string) => {
+      try {
+        const arr = JSON.parse(json) as DeepseekQueueItem[];
+        setDeepseekQueue(Array.isArray(arr) ? arr : []);
+      } catch {
+        setDeepseekQueue([]);
+      }
+    };
+    // 挂载后主动拉取一次当前队列（规避 bootstrap 推送早于回调注册的竞态）。
+    sendBridgeEvent('get_deepseek_queue');
+    return () => { window.updateDeepseekQueue = undefined; };
+  }, []);
 
   // ── Local refs (don't trigger re-render, kept in App.tsx) ──
   const isFirstMountRef = useRef(true);
@@ -471,6 +488,14 @@ const App = () => {
           }
         }}
       />
+
+      {currentView === 'chat' && deepseekQueue.length > 0 && (
+        <DeepseekQueuePanel
+          items={deepseekQueue}
+          onRemove={(id) => sendBridgeEvent('remove_deepseek_queue_item', id)}
+          onClear={() => sendBridgeEvent('clear_deepseek_queue')}
+        />
+      )}
 
       {currentView === 'settings' ? (
         <SettingsView

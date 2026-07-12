@@ -55,6 +55,41 @@ function getTitlesFile() {
 }
 
 /**
+ * 历史列表索引缓存文件：~/.codemoss/history-index.json。
+ * 目的（问题 5）：会话原文必须保留为 ~/.claude/projects/<cwd>/<sessionId>.jsonl（Claude CLI/SDK 的
+ * 原生格式，续聊 resume 依赖它，不能迁移到数据库）。但每次打开历史面板都把每个会话文件整个读入内存
+ * 逐行解析，数据量大时既慢又占内存。故额外维护一个轻量本地索引：按「文件绝对路径 -> {mtimeMs,size,info}」
+ * 缓存列表元数据，扫描时若文件 mtime+size 未变则直接复用缓存、跳过整文件读取；变了才重新解析并回写。
+ * 该索引只是加速缓存，删了会自动重建，不影响正确性。
+ */
+function getHistoryIndexFile() {
+  return path.join(getCodemossDir(), 'history-index.json');
+}
+
+const HISTORY_INDEX_VERSION = 1;
+let _historyIndexCache = null; // 进程内内存缓存，避免每次扫描都读盘
+
+/** 读历史索引（内存优先）；结构 { version, entries: { <absFile>: { mtimeMs, size, info } } }。 */
+function loadHistoryIndex() {
+  if (_historyIndexCache) return _historyIndexCache;
+  const obj = readJsonObjectSafe(getHistoryIndexFile());
+  if (obj && obj.version === HISTORY_INDEX_VERSION && obj.entries && typeof obj.entries === 'object') {
+    _historyIndexCache = obj;
+  } else {
+    // 版本不符 / 空 / 损坏：重建（旧结构直接丢弃）
+    _historyIndexCache = { version: HISTORY_INDEX_VERSION, entries: {} };
+  }
+  return _historyIndexCache;
+}
+
+/** 原子回写历史索引（best-effort，失败仅退化为下次全量扫描）。 */
+function saveHistoryIndex(index) {
+  try {
+    writeJsonObjectAtomic(getHistoryIndexFile(), index);
+  } catch (e) { /* 索引仅为加速缓存，写失败不影响功能 */ }
+}
+
+/**
  * 把工作区路径编码为 ~/.claude/projects 下的目录名。
  * 必须与 Java PathUtils.sanitizePath 完全一致：所有非字母数字字符替换为 '-'。
  * 例：D:\Projects\My-App -> D--Projects-My-App
@@ -352,6 +387,10 @@ function scanProjectSessions(cwd) {
     return [];
   }
 
+  const index = loadHistoryIndex();
+  let indexDirty = false;
+  const seenKeys = new Set();
+
   const sessions = [];
   for (const entry of entries) {
     if (!entry.isFile() && !(entry.isSymbolicLink && entry.isSymbolicLink())) continue;
@@ -361,9 +400,38 @@ function scanProjectSessions(cwd) {
     if (!UUID_PATTERN.test(sessionId)) continue; // 仅纯 uuid 会话文件（排除 agent-*.jsonl 等）
 
     const full = path.join(dir, name);
+    let stat;
+    try {
+      stat = fs.statSync(full);
+    } catch (e) {
+      continue; // 读不到元信息（并发删除等）：跳过
+    }
+    seenKeys.add(full);
+
+    // 命中缓存：文件 mtime+size 未变 → 直接复用（含「已过滤」的 null 结果），跳过整文件读取。
+    const cached = index.entries[full];
+    if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+      if (cached.info) sessions.push({ ...cached.info });
+      continue;
+    }
+
+    // 未命中：整文件解析一次，写入索引（info 为 null 也缓存，避免反复重读被过滤的文件）。
     const info = readSessionInfo(full, sessionId.toLowerCase());
+    index.entries[full] = { mtimeMs: stat.mtimeMs, size: stat.size, info: info || null };
+    indexDirty = true;
     if (info) sessions.push(info);
   }
+
+  // 清理本项目目录下已删除会话的陈旧索引条目，防止索引无限膨胀。
+  const prefix = dir + path.sep;
+  for (const k of Object.keys(index.entries)) {
+    if ((k === dir || k.startsWith(prefix)) && !seenKeys.has(k)) {
+      delete index.entries[k];
+      indexDirty = true;
+    }
+  }
+
+  if (indexDirty) saveHistoryIndex(index);
 
   sessions.sort((a, b) => b.lastTimestamp - a.lastTimestamp);
   return sessions;
@@ -543,14 +611,30 @@ function isoNow() {
  * 构建前端 transport raw：仅保留前端需要的字段，避免把整条 JSONL（含 cwd/gitBranch 等）发给前端。
  * 对齐 claude-session.js 的 _trimRaw 与 Java MessageJsonConverter.buildTransportRaw。
  */
+// 与 claude-session.js 同款：入前端前截断超大字符串（历史里 tool_result/tool_use 可能是整份文件/命令输出）。
+// 重放大会话时不截断会把数百 MB 一次性灌进前端 + 宿主，是重开历史会话 OOM 的诱因。
+const MAX_BLOCK_STRING = 20000;
+function capDeepStrings(value, maxLen) {
+  if (typeof value === 'string') {
+    return value.length > maxLen ? value.slice(0, maxLen) + `\n…[内容过长已截断，原 ${value.length} 字符]` : value;
+  }
+  if (Array.isArray(value)) return value.map((v) => capDeepStrings(v, maxLen));
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const k of Object.keys(value)) out[k] = capDeepStrings(value[k], maxLen);
+    return out;
+  }
+  return value;
+}
+
 function buildTransportRaw(obj) {
   const t = {};
   for (const k of ['uuid', 'type', 'isMeta', 'text', 'origin', 'turnUsage']) {
     if (obj[k] !== undefined) t[k] = obj[k];
   }
-  if (obj.content !== undefined) t.content = obj.content;
+  if (obj.content !== undefined) t.content = capDeepStrings(obj.content, MAX_BLOCK_STRING);
   if (obj.message && typeof obj.message === 'object' && obj.message.content !== undefined) {
-    t.message = { content: obj.message.content };
+    t.message = { content: capDeepStrings(obj.message.content, MAX_BLOCK_STRING) };
   }
   return t;
 }

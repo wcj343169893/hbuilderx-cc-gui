@@ -20,6 +20,12 @@ const { CcDiffEditorProvider } = require('./lib/diff-editor-provider');
 const VIEW_ID = 'ccgui.chatView';
 const CONTAINER_ID = 'ccgui.container';
 
+// 插件版本号：读自同目录 package.json，供状态栏 tooltip 等运行时文案自动跟随版本（不用手改）。
+let PLUGIN_VERSION = '';
+try {
+  PLUGIN_VERSION = require('./package.json').version || '';
+} catch (e) { /* 读不到则留空，文案退化为不带版本号 */ }
+
 // 调试日志文件：HBuilderX 的 .log 不收录插件 OutputChannel 输出，故同时写一份到磁盘便于排查。
 const LOG_FILE = path.join(os.homedir(), '.codemoss', 'ccgui-debug.log');
 
@@ -202,7 +208,7 @@ function activate(context) {
   try {
     statusBar = hx.window.createStatusBarItem(hx.StatusBarAlignment.Right, 100);
     statusBar.text = '$(ccgui)';
-    statusBar.tooltip = '打开 CC GUI 助手';
+    statusBar.tooltip = PLUGIN_VERSION ? `打开 CC GUI 助手 v${PLUGIN_VERSION}` : '打开 CC GUI 助手';
     statusBar.command = 'extension.ccgui.open';
     statusBar.show();
     output.appendLine('[ccgui] 状态栏图标已创建');

@@ -3,7 +3,7 @@
   "name": "cqsort-cc-gui",
   "displayName": "CC GUI（Claude or Codex）",
   "description": "Claude Code / OpenAI Codex 可视化助手（HBuilderX 版）",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "重庆柔然科技有限公司",
   "repository": "https://github.com/wcj343169893/hbuilderx-cc-gui.git",
   "homepage": "https://github.com/wcj343169893/hbuilderx-cc-gui",
@@ -31,7 +31,9 @@
         "viewType": "ccgui.diffEditor",
         "displayName": "CC GUI Diff",
         "selector": [
-          { "fileNamePattern": "*.ccdiff" }
+          {
+            "fileNamePattern": "*.ccdiff"
+          }
         ],
         "priority": "default"
       }
@@ -133,6 +135,41 @@
           "type": "boolean",
           "default": false,
           "description": "在「CC GUI」输出面板显示调试日志（默认关闭；无论开关都会记录到 ~/.codemoss/ccgui-debug.log）"
+        },
+        "ccgui.autoRetryEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "发送遇到瞬时错误（如 DeepSeek 偶发的「API request failed」、超时、5xx、网络中断）时自动重试。仅在本轮尚未产出内容的早期失败时重试；鉴权类错误(401/无效密钥等)不重试。"
+        },
+        "ccgui.autoRetryCount": {
+          "type": "number",
+          "default": 3,
+          "description": "自动重试的最大次数（0~10，0 表示不重试）。总尝试次数 = 1 + 该值。"
+        },
+        "ccgui.autoRetryDelaySeconds": {
+          "type": "number",
+          "default": 3,
+          "description": "每次自动重试前的等待秒数（1~60）。"
+        },
+        "ccgui.deepseekPeakGuard": {
+          "type": "boolean",
+          "default": true,
+          "description": "使用 DeepSeek 且处于高峰时段（北京时间 9:00-12:00、14:00-18:00，价格 2 倍）发送前，弹窗提示并让你选择：制定开发计划 / 加入队列(平价自动执行) / 立即发送(选思考深度) / 取消。"
+        },
+        "ccgui.deepseekAutoQueueExecute": {
+          "type": "boolean",
+          "default": true,
+          "description": "平价时段自动分批执行 DeepSeek 队列中的任务（每个任务用全新会话，避免上下文膨胀）。关闭后队列仅保留、不自动执行。"
+        },
+        "ccgui.deepseekModelEasy": {
+          "type": "string",
+          "default": "",
+          "description": "平价自动执行时，判定为「简单」的任务使用的模型 id（留空则用当前模型）。例如成本更低的模型。"
+        },
+        "ccgui.deepseekModelHard": {
+          "type": "string",
+          "default": "",
+          "description": "平价自动执行时，判定为「复杂」的任务使用的模型 id（留空则用当前模型）。例如推理更强的模型。"
         }
       }
     }
@@ -169,5 +206,5 @@
     "codex",
     "AI",
     "agent"
-]
+  ]
 }

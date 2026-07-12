@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const crypto = require('crypto');
 const { detectNode, resetCache: resetNodeCache } = require('./node-detector');
 const { AiBridgeClient } = require('./ai-bridge-client');
 const { processOutputLine } = require('./stream-adapter');
@@ -13,6 +14,7 @@ const prefs = require('./prefs');
 const skillsService = require('./skills-service');
 const uniAgentSkillsInstaller = require('./uni-agent-skills-installer');
 const historyService = require('./history-service');
+const deepseekPeak = require('./deepseek-peak');
 const agentService = require('./agent-service');
 const mcpService = require('./mcp-service');
 const dependencyService = require('./dependency-service');
@@ -43,6 +45,24 @@ const LIST_FILES_SKIP_DIRS = new Set([
   'tmp', 'temp', 'logs', '.tmp', '.temp',
 ]);
 const LIST_FILES_SKIP_FILES = new Set(['.DS_Store', 'Thumbs.db', 'desktop.ini']);
+
+// ===== 发送自动重试 =====
+// stream-adapter 上报的、代表「本轮已产出助手内容」的事件类型。只要本次尝试出现过其一，
+// 就说明不是「早期失败」，此时不再自动重试（避免把已流式的部分回复重复追加）。
+const CONTENT_EVENT_TYPES = new Set(['content_delta', 'content', 'thinking_delta', 'assistant', 'tool_result']);
+// 瞬时（可重试）错误特征，对齐 ai-bridge message-utils.isRetryableError；命中即隔几秒自动重试。
+const RETRYABLE_ERROR_PATTERNS = [
+  'api request failed', 'overloaded', 'rate limit', 'timeout', 'timed out',
+  'econnreset', 'econnrefused', 'etimedout', 'enotfound', 'ehostunreach',
+  'network', 'fetch failed', 'socket hang up', 'getaddrinfo',
+  'service unavailable', 'internal server error', 'bad gateway', 'gateway timeout',
+  '429', '500', '502', '503', '504',
+];
+// 明确「非瞬时」的错误特征（多为鉴权/配置问题，重试无意义）：命中则即便像瞬时错误也不重试。
+const NON_RETRYABLE_ERROR_PATTERNS = [
+  '401', '403', 'unauthorized', 'invalid api key', 'invalid_api_key',
+  'authentication', 'permission denied', 'insufficient', 'quota',
+];
 
 // ===== 特殊伪 provider id（不存于 providers 列表，代表运行模式而非具体供应商）=====
 // 与 webview SPECIAL_PROVIDER_IDS / IDEA ProviderManager / ai-bridge api-config 三方保持一致。
@@ -85,6 +105,11 @@ class MessageRouter {
     // 持久化偏好恢复（重启后保留上次选择），优先级：pref.json > 配置/默认
     this._prefs = prefs.load(hx);
     this.sessionId = '';
+    // 运行时会话纪元：daemon 用它隔离/失效 per-会话的持久 runtime（签名含 epoch + 归属断言）。
+    // 对齐 Java SessionState.runtimeSessionEpoch（每会话一个 UUID）。此前 HBuilderX 端从不发送，
+    // 导致 daemon 按 signature 复用匿名 runtime——新建会话会串到上一/其他会话的流（问题 4 根因）。
+    // 新建 / 清空 / 加载历史时 rotate（见 _rotateEpoch），并请求 daemon 释放旧 epoch 的 runtime。
+    this.runtimeSessionEpoch = this._genEpoch();
     this.provider = this._prefs.provider || 'claude';
     this.model = this._prefs.model || '';
     this.permissionMode = this._prefs.permissionMode || this._readPermissionMode();
@@ -991,6 +1016,21 @@ class MessageRouter {
     return s;
   }
 
+  /** 在 folders 中按路径精确匹配一个项目（归一化后相等）。无则 null。用于「上次项目是否仍打开」判定。 */
+  _folderForPath(folders, p) {
+    if (!p) return null;
+    const np = this._normPath(p);
+    if (!np) return null;
+    return folders.find((f) => this._normPath(f.path) === np) || null;
+  }
+
+  /** 记住「上次使用的项目路径」（持久化），供临时文件/无活动文件场景回退（问题 3）。 */
+  _rememberProject(p) {
+    if (p && p !== this._prefs.lastProjectPath) {
+      this._persist({ lastProjectPath: p });
+    }
+  }
+
   /** 在 folders 中找包含 fsPath 的项目（归一化后最长前缀匹配）。无则 null。 */
   _folderContaining(folders, fsPath) {
     const nf = this._normPath(fsPath);
@@ -1021,7 +1061,15 @@ class MessageRouter {
       const containing = this._folderContaining(folders, fsPath);
       if (containing) return containing;
     } catch (e) { this.output.appendLine(`[router] _resolveActiveProject 异常: ${e && e.message}`); }
-    // ② 编辑区没有文件 / 文件不属于任何已打开项目：兜底用第一个项目
+    // ② 编辑区没有文件 / 编辑的是临时文件 / 文件不属于任何已打开项目：
+    //    优先沿用「上次使用的项目」（当前 cwd 或持久化的 lastProjectPath，需仍在已打开项目中），
+    //    而不是硬回退到第一个项目——否则编辑临时文件时新建会话会莫名跳到别的项目（问题 3）。
+    const prev = this._folderForPath(folders, this.cwd) || this._folderForPath(folders, this._prefs.lastProjectPath);
+    if (prev) {
+      this.output.appendLine(`[router] _resolveActiveProject: 临时/无归属文件，沿用上次项目 -> ${prev.path}`);
+      return prev;
+    }
+    // ③ 无上次项目可沿用：兜底第一个项目
     return folders[0];
   }
 
@@ -1029,6 +1077,7 @@ class MessageRouter {
   async _resolveCwd() {
     const proj = await this._resolveActiveProject();
     this.projectName = proj.name || '';
+    this._rememberProject(proj.path || '');
     return proj.path || '';
   }
 
@@ -1090,6 +1139,21 @@ class MessageRouter {
     } catch (e) {
       this.output.appendLine(`[router] 预置官方技能失败: ${e && e.message}`);
     }
+
+    // 启动 DeepSeek 队列调度器：每分钟检查一次，平价时段自动分批执行队列任务。
+    this._startQueueScheduler();
+  }
+
+  /** 启动 DeepSeek 队列调度器（周期性尝试在平价时段执行队列）。 */
+  _startQueueScheduler() {
+    if (this._queueTimer) return;
+    this._queueTimer = setInterval(() => {
+      this._processDeepSeekQueue().catch((e) => this.output.appendLine(`[router] 队列执行异常: ${e && e.message}`));
+    }, 60 * 1000);
+    if (typeof this._queueTimer.unref === 'function') this._queueTimer.unref();
+    // 启动即推一次队列状态，并尝试执行一次（若已是平价且有积压）。
+    this._emitQueueStatus();
+    this._processDeepSeekQueue().catch(() => {});
   }
 
   /** 启动后向前端推送初始状态，使聊天界面可用。 */
@@ -1110,6 +1174,8 @@ class MessageRouter {
     this.bridge.callJs('updateSlashCommands', JSON.stringify(this._builtinSlashCommands()));
     // 顶部展示当前会话所属项目（HBuilderX 可同时打开多个项目）
     this._emitProject();
+    // DeepSeek 平价队列面板：启动即推一次当前队列（前端挂载后也会主动 get_deepseek_queue）
+    this._emitQueue();
   }
 
   /** 出站事件分发器（注册到 BridgeHost.onEvent）。 */
@@ -1138,7 +1204,22 @@ class MessageRouter {
         this._handleLoadSession(content);
         break;
       case 'interrupt_session':
+        // 停止自动重试（若正处于重试等待），再中断 daemon 当前轮。
+        this._cancelRetryDelay();
         if (this.aiBridge) this.aiBridge.abort();
+        break;
+      // ===== DeepSeek 平价队列（前端面板）=====
+      case 'get_deepseek_queue':
+        this._emitQueue();
+        break;
+      case 'remove_deepseek_queue_item': {
+        const id = typeof content === 'string' ? content.trim() : '';
+        if (id) { this._saveQueue(this._loadQueue().filter((x) => x.id !== id)); this._emitQueueStatus(); }
+        break;
+      }
+      case 'clear_deepseek_queue':
+        this._saveQueue([]);
+        this._emitQueueStatus();
         break;
       case 'set_model':
         this.model = content || '';
@@ -1474,8 +1555,36 @@ class MessageRouter {
     }
   }
 
+  /** 生成一个运行时会话纪元（UUID）。crypto.randomUUID 在 Node ≥14.17 可用；兜底手拼。 */
+  _genEpoch() {
+    try {
+      if (crypto && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+    } catch (e) { /* fallthrough */ }
+    return 'epoch-' + Date.now() + '-' + Math.random().toString(16).slice(2);
+  }
+
+  /**
+   * 轮换运行时会话纪元：请求 daemon 释放旧 epoch 绑定的持久 runtime，再切到新 epoch。
+   * 对齐 Java SessionLifecycleManager：新建/清空/加载历史前 resetPersistentRuntime(oldEpoch)。
+   * daemon 侧 claude.resetRuntime 会 dispose 所有 runtimeSessionEpoch === oldEpoch 的 runtime，
+   * 从根上杜绝新会话复用到旧会话/其他会话仍在流式的 runtime（问题 4）。fire-and-forget。
+   */
+  _rotateEpoch() {
+    const oldEpoch = this.runtimeSessionEpoch;
+    this.runtimeSessionEpoch = this._genEpoch();
+    if (this.aiBridge && oldEpoch) {
+      try {
+        this.aiBridge.request('claude.resetRuntime', { runtimeSessionEpoch: oldEpoch }, () => {})
+          .catch(() => {});
+      } catch (e) { /* ignore：daemon 未就绪时无旧 runtime 可释放 */ }
+    }
+    this.output.appendLine(`[router] rotate epoch: ${oldEpoch || '(none)'} -> ${this.runtimeSessionEpoch}`);
+  }
+
   _handleNewSession() {
     this.sessionId = '';
+    // 轮换 epoch 并释放旧 runtime：确保新会话不复用上一会话/其他会话仍绑定的 daemon runtime。
+    this._rotateEpoch();
     this.assembler.reset();
     this.bridge.callJs('clearMessages');
   }
@@ -1525,7 +1634,8 @@ class MessageRouter {
 
     this.cwd = chosen.path;
     this.projectName = chosen.name;
-    // 注：默认项目按「活动编辑器→第一个」解析，不再持久化「上次选择」，故此处不写 projectPath。
+    // 记住上次项目：编辑临时文件/无活动文件时新建会话据此回退，而非跳到第一个项目（问题 3）。
+    this._rememberProject(chosen.path);
     this.output.appendLine(`[router] 切换项目 -> ${this.projectName} (${this.cwd})`);
     this._handleNewSession(); // 切到不同项目：历史按项目隔离，开新会话
     this._emitProject();
@@ -1556,6 +1666,7 @@ class MessageRouter {
       if (this._normPath(containing.path) === this._normPath(this.cwd)) return false; // 已是当前项目
       this.cwd = containing.path;
       this.projectName = containing.name;
+      this._rememberProject(containing.path);
       this.output.appendLine(`[router] 定位活动文件所属项目 -> ${this.projectName} (${this.cwd})`);
       return true;
     } catch (e) {
@@ -1657,6 +1768,9 @@ class MessageRouter {
     }
 
     this.sessionId = sessionId;
+    // 加载历史会话前也轮换 epoch 并释放旧 runtime（对齐 Java：history load 前 resetPersistentRuntime）。
+    // 否则续聊该历史会话时可能命中上一会话遗留的 daemon runtime，导致分析流串扰（问题 1/4）。
+    this._rotateEpoch();
     this.assembler.reset();
 
     try {
@@ -1944,6 +2058,15 @@ class MessageRouter {
       this.cwd = await this._resolveCwd();
     }
 
+    // DeepSeek 高峰(2倍价)拦截：非自动执行 + 开启守卫 + 当前用 DeepSeek + 处于高峰时段 → 弹原生对话，
+    // 让用户决定「制定计划 / 加入队列(平价自动执行) / 立即发送(选思考深度) / 取消」。
+    if (!payload.__autoRun && this._isDeepSeekPeakGuardEnabled()
+        && this._isDeepSeekActive() && deepseekPeak.isPeakAt(new Date())) {
+      const decision = await this._promptDeepSeekPeak(payload, text);
+      if (!decision || decision.action === 'cancel' || decision.action === 'queued') return;
+      payload = decision.payload || payload; // 'send'：合并了 permissionMode/reasoningEffort/disableThinking
+    }
+
     this.assembler.addUserMessage(text);
 
     // 「环境」tab 的自定义工作目录覆盖：显式设置且目录存在时优先于项目 cwd
@@ -1953,62 +2076,439 @@ class MessageRouter {
     const params = {
       message: text,
       sessionId: this.sessionId || '',
+      // 运行时会话纪元：daemon 据此隔离/复用持久 runtime，杜绝跨会话/跨项目串流（问题 4）。
+      runtimeSessionEpoch: this.runtimeSessionEpoch || '',
       cwd: effectiveCwd,
       permissionMode: payload.permissionMode || this.permissionMode,
-      // 激活 provider 指定了主模型（如 DeepSeek 的 ANTHROPIC_MODEL）时优先用它；否则用 UI 选择
-      model: this._activeProviderModel() || this.model || '',
+      // 模型优先级：payload.model（队列按难度自动选的模型）> 激活 provider 主模型 > UI 选择。
+      model: payload.model || this._activeProviderModel() || this.model || '',
       openedFiles: null,
       agentPrompt: (payload.agent && payload.agent.prompt) || null,
       streaming: true,
-      disableThinking: false,
+      disableThinking: payload.disableThinking === true,
       reasoningEffort: payload.reasoningEffort || null,
     };
 
     // 告知装配器本轮生效模型，使 [USAGE] 能按该模型上下文窗口换算百分比
     this.assembler.setModel(params.model);
 
-    const state = {};
-    const onLine = (line) => {
-      try {
-        processOutputLine(line, (type, p) => {
-          if (type === 'session_id') this.sessionId = p;
-          this.assembler.onEvent(type, p);
-        }, state);
-      } catch (err) {
-        this.output.appendLine(`[router] 行解析异常: ${err && err.message}`);
-      }
-    };
+    // 自动重试参数（读自 HBuilderX 设置，每次发送实时读取，改设置即时生效）：
+    // DeepSeek 等三方接口偶发 "API request failed" 等瞬时错误时隔几秒自动重试。
+    // 仅在「本次尝试尚未产出任何助手内容」（早期失败）时重试，避免把已流式的部分回复重复追加。
+    const retryCfg = this._readAutoRetryConfig();
+    const MAX_RETRIES = retryCfg.enabled ? retryCfg.maxRetries : 0; // 额外重试次数（总尝试 = 1 + MAX_RETRIES）
+    const RETRY_DELAY_MS = retryCfg.delayMs;                        // 每次重试前等待（固定间隔）
 
     this.output.appendLine(`[router] send: model=${params.model || '(default)'} mode=${params.permissionMode} cwd=${params.cwd || '(empty!)'}`);
     this._busy = true;
+    this._sendCanceled = false; // 用户中断（interrupt_session）标志：置真则停止重试
     // 流式保活心跳：工具执行 / 等待授权期间，daemon 在 tool_use 与 tool_result 之间
     // 对 stdout 完全静默（无 delta / [MESSAGE] / [TOOL_RESULT]）。前端 stall 看门狗
     // （60s 无活动即判定 onStreamEnd 丢失）会误判而强制结束 → 倒计时提前停止、后续
     // delta 被丢弃，用户误以为已执行完。IDEA 版靠 StreamMessageCoalescer 周期重推保活，
     // 本移植版缺失，故在此周期下发 onStreamingHeartbeat 刷新前端 __lastStreamActivityAt。
     // daemon 进程崩溃由 AiBridgeClient 的 proc.on('exit') resolve 未决请求兜底，不依赖看门狗。
+    // 心跳跨越整个重试循环，重试等待期间也保活。
     const heartbeat = setInterval(() => {
       try { this.bridge.callJs('onStreamingHeartbeat'); } catch (e) { /* ignore */ }
     }, 10000);
     try {
-      const result = await this.aiBridge.request('claude.send', params, onLine);
-      this.output.appendLine(`[router] send 完成: success=${result.success} error=${result.error || '(none)'} lastNodeError=${state.lastNodeError || '(none)'}`);
-      if (!result.success && !state.hadSendError) {
-        this.assembler.onError(result.error || state.lastNodeError || 'Unknown error');
-      } else {
-        this.assembler.onComplete();
+      let attempt = 0;
+      while (true) {
+        // 每次尝试独立状态：errorText 拦截 __error（重试期间先不抛给装配器）；sawContent 判早期失败。
+        const attemptState = { lastNodeError: undefined, hadSendError: false, errorText: null, sawContent: false };
+        const onLine = (line) => {
+          try {
+            processOutputLine(line, (type, p) => {
+              if (type === 'session_id') this.sessionId = p;
+              if (type === '__error') {
+                // 先记下错误，待判定不再重试后再交给装配器展示（见循环末尾），避免重试时先弹错。
+                attemptState.errorText = p;
+                return;
+              }
+              if (CONTENT_EVENT_TYPES.has(type)) attemptState.sawContent = true;
+              this.assembler.onEvent(type, p);
+            }, attemptState);
+          } catch (err) {
+            this.output.appendLine(`[router] 行解析异常: ${err && err.message}`);
+          }
+        };
+
+        const result = await this.aiBridge.request('claude.send', params, onLine);
+        const errText = attemptState.errorText
+          || (!result.success ? (result.error || attemptState.lastNodeError || 'Unknown error') : null);
+        this.output.appendLine(`[router] send 完成(第 ${attempt + 1} 次): success=${result.success} error=${errText || '(none)'} sawContent=${attemptState.sawContent}`);
+
+        const canRetry = !!errText
+          && this._isRetryableSendError(errText)
+          && !attemptState.sawContent   // 已产出内容则不重试，避免重复回复
+          && attempt < MAX_RETRIES
+          && !this._sendCanceled;
+
+        if (canRetry) {
+          attempt++;
+          const delayMs = RETRY_DELAY_MS;
+          const secs = Math.round(delayMs / 1000);
+          this.output.appendLine(`[router] 瞬时错误「${errText}」，${secs}s 后自动重试（第 ${attempt}/${MAX_RETRIES} 次）`);
+          try {
+            this.bridge.callJs('addToast', `接口请求失败，${secs} 秒后自动重试（第 ${attempt}/${MAX_RETRIES} 次）…`, 'warning');
+          } catch (e) { /* ignore */ }
+          // 重置本轮助手累积态，保证重试从干净状态开始（不动 messages 里已回显的用户气泡）。
+          try { this.assembler._beginTurn(); } catch (e) { /* ignore */ }
+          await this._interruptibleDelay(delayMs);
+          if (this._sendCanceled) { this.assembler.onComplete(); break; } // 等待期间被中断
+          continue;
+        }
+
+        // 终态：有错误则展示（未被中断时）；否则正常完成。
+        if (errText && !this._sendCanceled) {
+          this.assembler.onError(errText);
+        } else {
+          this.assembler.onComplete();
+        }
+        break;
       }
     } catch (err) {
       this.assembler.onError(err && err.message ? err.message : String(err));
     } finally {
       clearInterval(heartbeat);
       this._busy = false;
+      this._sendCanceled = false;
       // 本轮回复完成后检查是否有待处理的自动 compact
       if (this._pendingCompact) {
         this._pendingCompact = false;
         this.output.appendLine('[router] 本轮完成，执行 pending 自动 compact');
         this._handleSend(JSON.stringify({ text: '/compact' }));
       }
+    }
+  }
+
+  /**
+   * 读取自动重试设置（HBuilderX 配置：ccgui.autoRetry*）。带默认值与范围钳制，读失败回落默认。
+   * @returns {{ enabled: boolean, maxRetries: number, delayMs: number }}
+   */
+  _readAutoRetryConfig() {
+    let c = null;
+    try { c = this.hx.workspace.getConfiguration(); } catch (e) { c = null; }
+    const getBool = (k, d) => {
+      try { const v = c && c.get(k); return typeof v === 'boolean' ? v : d; } catch (e) { return d; }
+    };
+    const getNum = (k, d) => {
+      try { const n = Number(c && c.get(k)); return Number.isFinite(n) ? n : d; } catch (e) { return d; }
+    };
+    const enabled = getBool('ccgui.autoRetryEnabled', true);
+    let maxRetries = Math.round(getNum('ccgui.autoRetryCount', 3));
+    if (!Number.isFinite(maxRetries) || maxRetries < 0) maxRetries = 0;
+    if (maxRetries > 10) maxRetries = 10; // 上限保护，避免误填天量次数
+    let delaySec = getNum('ccgui.autoRetryDelaySeconds', 3);
+    if (!Number.isFinite(delaySec) || delaySec < 1) delaySec = 1;
+    if (delaySec > 60) delaySec = 60;
+    return { enabled, maxRetries, delayMs: Math.round(delaySec * 1000) };
+  }
+
+  /** 判断一次发送错误是否属于「瞬时可重试」：命中可重试特征且未命中明确的不可重试（鉴权等）特征。 */
+  _isRetryableSendError(errText) {
+    const s = String(errText || '').toLowerCase();
+    if (!s) return false;
+    if (NON_RETRYABLE_ERROR_PATTERNS.some((p) => s.includes(p))) return false;
+    return RETRYABLE_ERROR_PATTERNS.some((p) => s.includes(p));
+  }
+
+  /**
+   * 可被用户中断的等待：正常等 ms 毫秒；期间若 interrupt_session 触发 _cancelRetryDelay 则提前返回。
+   */
+  _interruptibleDelay(ms) {
+    return new Promise((resolve) => {
+      const done = () => {
+        if (this._retryTimer) { clearTimeout(this._retryTimer); this._retryTimer = null; }
+        this._retryResolve = null;
+        resolve();
+      };
+      this._retryResolve = done;
+      this._retryTimer = setTimeout(done, ms);
+    });
+  }
+
+  /** 中断发送/重试：置取消标志并唤醒可能正在等待的重试延时。 */
+  _cancelRetryDelay() {
+    this._sendCanceled = true;
+    if (this._retryResolve) { try { this._retryResolve(); } catch (e) { /* ignore */ } }
+  }
+
+  // ===================== DeepSeek 峰谷定价：高峰守卫 + 队列 + 平价自动执行 =====================
+
+  /** 读布尔型 HBuilderX 配置，缺省/异常回落默认值。 */
+  _readBoolConfig(key, def) {
+    try {
+      const v = this.hx.workspace.getConfiguration().get(key);
+      return typeof v === 'boolean' ? v : def;
+    } catch (e) { return def; }
+  }
+
+  /** 是否开启高峰守卫（默认开）。 */
+  _isDeepSeekPeakGuardEnabled() {
+    return this._readBoolConfig('ccgui.deepseekPeakGuard', true);
+  }
+
+  /** 是否允许平价时段自动执行队列（默认开）。 */
+  _isDeepSeekAutoExecuteEnabled() {
+    return this._readBoolConfig('ccgui.deepseekAutoQueueExecute', true);
+  }
+
+  /** 当前激活 provider 是否为 DeepSeek（按名称/baseUrl/模型名判定）。 */
+  _isDeepSeekActive() {
+    const p = this._activeProvider();
+    const env = (p && p.settingsConfig && p.settingsConfig.env) || {};
+    const baseUrl = env.ANTHROPIC_BASE_URL || env.ANTHROPIC_API_URL || '';
+    const model = this._activeProviderModel() || this.model || '';
+    const name = (p && p.name) || '';
+    return deepseekPeak.isDeepSeek({ name, baseUrl, model });
+  }
+
+  /** 读取 DeepSeek 队列（存于 pref.json 的 deepseekQueue，重启保留）。 */
+  _loadQueue() {
+    const q = this._prefs.deepseekQueue;
+    return Array.isArray(q) ? q.slice() : [];
+  }
+
+  /** 保存 DeepSeek 队列。 */
+  _saveQueue(q) {
+    this._persist({ deepseekQueue: Array.isArray(q) ? q : [] });
+  }
+
+  /** 把完整队列列表下发前端面板（updateDeepseekQueue）。不受 busy 限制，保证面板实时刷新。 */
+  _emitQueue() {
+    const q = this._loadQueue();
+    const ui = q.map((it) => ({
+      id: it.id,
+      text: String(it.text || ''),
+      difficulty: deepseekPeak.classifyDifficulty(it.text),
+      project: it.cwd ? path.basename(it.cwd) : '',
+      permissionMode: it.permissionMode || '',
+      enqueuedAt: it.enqueuedAt || 0,
+    }));
+    try { this.bridge.callJs('updateDeepseekQueue', JSON.stringify(ui)); } catch (e) { /* ignore */ }
+  }
+
+  /** 同步队列到前端：完整列表（面板）+ 状态行（流式期间跳过，避免覆盖流式状态）。 */
+  _emitQueueStatus() {
+    this._emitQueue();
+    if (this._busy) return;
+    const n = this._loadQueue().length;
+    try { this.bridge.callJs('updateStatus', n > 0 ? `DeepSeek 队列：${n} 项待平价自动执行` : ''); } catch (e) { /* ignore */ }
+  }
+
+  /**
+   * 把本次发送加入队列（平价时段自动执行）。每项记录 cwd 以在正确项目里执行。
+   * @param {string} [permissionModeOverride] 平价自动执行时的权限模式（如 acceptEdits/bypassPermissions）
+   */
+  _enqueueDeepSeek(payload, text, permissionModeOverride) {
+    const q = this._loadQueue();
+    q.push({
+      id: this._genEpoch(),
+      text,
+      cwd: this.cwd || '',
+      permissionMode: permissionModeOverride || payload.permissionMode || this.permissionMode,
+      reasoningEffort: payload.reasoningEffort || null,
+      disableThinking: payload.disableThinking === true,
+      agent: payload.agent || null,
+      enqueuedAt: Date.now(),
+    });
+    this._saveQueue(q);
+    try { this.bridge.callJs('addToast', `已加入队列（共 ${q.length} 项），平价时段将自动分批执行`, 'success'); } catch (e) { /* ignore */ }
+    this._emitQueueStatus();
+  }
+
+  /**
+   * 高峰时段原生决策弹窗：展示官方提示 + 省钱建议，返回 { action, payload? }。
+   * action ∈ 'send'(合并思考深度/计划模式后发送) | 'queued'(已入队,不发) | 'cancel'(不发)。
+   */
+  async _promptDeepSeekPeak(payload, text) {
+    const offStr = deepseekPeak.beijingHHMM(deepseekPeak.nextOffPeakAt(new Date()));
+    const qn = this._loadQueue().length;
+    // 用 showQuickPick（整行列表，标签+说明都完整显示）替代 showInformationMessage——
+    // 后者放 4+ 个按钮时每个按钮只能显示约 3 个字，会被截断看不全。
+    const items = [
+      { act: 'plan', label: '制定开发计划', description: '只产出开发计划（plan 模式，最省钱）' },
+      { act: 'queue', label: '加入队列，平价时段自动执行', description: '下一步可选执行权限模式' },
+      { act: 'send', label: '仍要立即发送', description: '现在就发，下一步选思考深度' },
+    ];
+    if (qn > 0) items.push({ act: 'view', label: `查看 / 管理队列（${qn} 项）`, description: '查看、移除或清空已入队任务' });
+    items.push({ act: 'cancel', label: '取消', description: '本次不发送' });
+    const placeHolder = `DeepSeek 高峰时段 2 倍价（北京时间 9:00-12:00、14:00-18:00），约 ${offStr} 恢复平价 —— 请选择本次操作`;
+
+    let picked = null;
+    let dialogFailed = false;
+    try {
+      picked = await this.hx.window.showQuickPick(
+        items.map((i) => ({ label: i.label, description: i.description })),
+        { placeHolder },
+      );
+    } catch (e) { dialogFailed = true; }
+    // 弹窗 API 不可用/抛错：不阻断用户，按原样正常发送（不做拦截）。
+    if (dialogFailed) return { action: 'send', payload };
+    if (!picked) return { action: 'cancel' }; // 用户 ESC / 关闭
+    const label = (typeof picked === 'object') ? picked.label : picked;
+    const act = (items.find((i) => i.label === label) || {}).act || 'cancel';
+
+    if (act === 'cancel') return { action: 'cancel' };
+    if (act === 'view') { await this._manageQueueDialog(); return { action: 'cancel' }; }
+    if (act === 'queue') {
+      // 让用户选定该任务「平价自动执行」时的权限模式，以便无人值守改文件/跑命令。
+      const mode = await this._pickQueuePermissionMode();
+      if (!mode) return { action: 'cancel' };
+      this._enqueueDeepSeek(payload, text, mode);
+      return { action: 'queued' };
+    }
+    if (act === 'plan') {
+      // plan 模式：只产出开发计划、不改代码；低思考省钱。产出后可对每步「加入队列」。
+      return { action: 'send', payload: { ...payload, permissionMode: 'plan', reasoningEffort: 'low', disableThinking: false } };
+    }
+    // 立即发送 → 选思考深度
+    const depth = await this._pickThinkingDepth();
+    if (!depth) return { action: 'cancel' };
+    return { action: 'send', payload: { ...payload, ...depth } };
+  }
+
+  /**
+   * 选择「平价自动执行」时的权限模式。返回权限模式字符串或 null（取消）。
+   * 无人值守要真正改文件/跑命令，需 acceptEdits 或 bypassPermissions；否则 askAlways 会卡在授权框。
+   */
+  async _pickQueuePermissionMode() {
+    const items = [
+      { label: '自动接受编辑（推荐·可无人值守改文件）', mode: 'acceptEdits' },
+      { label: '全部自动（含命令，免询问）', mode: 'bypassPermissions' },
+      { label: `沿用当前权限模式（${this.permissionMode}）`, mode: this.permissionMode },
+    ];
+    let picked = null;
+    try {
+      picked = await this.hx.window.showQuickPick(
+        items.map((i) => ({ label: i.label })),
+        { placeHolder: '平价自动执行时的权限模式（决定能否无人值守改文件/跑命令）' },
+      );
+    } catch (e) { picked = null; }
+    if (!picked) return null;
+    const label = (typeof picked === 'object') ? picked.label : picked;
+    const found = items.find((i) => i.label === label);
+    return found ? found.mode : null;
+  }
+
+  /** 思考深度选择（高峰 2 倍价，越深越贵）。返回 { disableThinking, reasoningEffort } 或 null（取消）。 */
+  async _pickThinkingDepth() {
+    const items = [
+      { label: '关闭思考（最省）' },
+      { label: '低' },
+      { label: '中' },
+      { label: '高' },
+    ];
+    let picked = null;
+    try { picked = await this.hx.window.showQuickPick(items, { placeHolder: '高峰 2 倍价：选择本次思考深度（越深越贵）' }); } catch (e) { picked = null; }
+    if (!picked) return null;
+    const label = (typeof picked === 'object') ? picked.label : picked;
+    switch (label) {
+      case '关闭思考（最省）': return { disableThinking: true, reasoningEffort: null };
+      case '低': return { disableThinking: false, reasoningEffort: 'low' };
+      case '中': return { disableThinking: false, reasoningEffort: 'medium' };
+      case '高': return { disableThinking: false, reasoningEffort: 'high' };
+      default: return null;
+    }
+  }
+
+  /** 队列查看/管理原生弹窗：可移除单项或清空。 */
+  async _manageQueueDialog() {
+    const q = this._loadQueue();
+    if (!q.length) { try { this.bridge.callJs('addToast', '队列为空', 'info'); } catch (e) { /* ignore */ } return; }
+    const items = q.map((it, i) => ({
+      label: `${i + 1}. ${String(it.text || '').replace(/\s+/g, ' ').slice(0, 40)}`,
+      description: `难度 ${deepseekPeak.classifyDifficulty(it.text)}${it.cwd ? ' · ' + path.basename(it.cwd) : ''}`,
+    }));
+    const CLEAR = '⛔ 清空整个队列';
+    items.push({ label: CLEAR });
+    let picked = null;
+    try { picked = await this.hx.window.showQuickPick(items, { placeHolder: `队列共 ${q.length} 项（选一项移除；平价时段自动执行）` }); } catch (e) { picked = null; }
+    if (!picked) return;
+    const label = (typeof picked === 'object') ? picked.label : picked;
+    if (label === CLEAR) {
+      this._saveQueue([]);
+      try { this.bridge.callJs('addToast', '队列已清空', 'success'); } catch (e) { /* ignore */ }
+      this._emitQueueStatus();
+      return;
+    }
+    const idx = parseInt(String(label), 10) - 1;
+    if (Number.isInteger(idx) && idx >= 0 && idx < q.length) {
+      q.splice(idx, 1);
+      this._saveQueue(q);
+      try { this.bridge.callJs('addToast', `已移除，剩余 ${q.length} 项`, 'success'); } catch (e) { /* ignore */ }
+      this._emitQueueStatus();
+    }
+  }
+
+  /**
+   * 按任务难度自动选模型（平价自动执行时用）：难→ccgui.deepseekModelHard，易→ccgui.deepseekModelEasy，
+   * 中或未配置→当前模型。返回 { model, difficulty }。
+   */
+  _selectModelForTask(text) {
+    const base = this._activeProviderModel() || this.model || '';
+    let cfg = null;
+    try { cfg = this.hx.workspace.getConfiguration(); } catch (e) { cfg = null; }
+    const get = (k) => { try { const v = cfg && cfg.get(k); return typeof v === 'string' ? v.trim() : ''; } catch (e) { return ''; } };
+    const easy = get('ccgui.deepseekModelEasy');
+    const hard = get('ccgui.deepseekModelHard');
+    const difficulty = deepseekPeak.classifyDifficulty(text);
+    let model = base;
+    if (difficulty === 'hard' && hard) model = hard;
+    else if (difficulty === 'easy' && easy) model = easy;
+    return { model, difficulty };
+  }
+
+  /**
+   * 平价时段自动分批执行队列。要点：
+   *  - 仅在「非高峰 + 空闲 + 开启自动执行」时运行；期间若高峰恢复或用户开始发送则暂停。
+   *  - 每个任务用「全新会话」执行（sessionId 清空 + rotate epoch + reset），避免上下文串联/膨胀。
+   *  - 按任务难度自动选模型（_selectModelForTask）。
+   */
+  async _processDeepSeekQueue() {
+    if (this._queueRunning || this._busy) return;
+    if (!this._isDeepSeekAutoExecuteEnabled()) return;
+    if (deepseekPeak.isPeakAt(new Date())) return;
+    if (!this._loadQueue().length) return;
+
+    this._queueRunning = true;
+    try {
+      while (true) {
+        if (this._busy) break;                          // 用户开始交互，让位
+        if (deepseekPeak.isPeakAt(new Date())) break;   // 高峰恢复，暂停（下个平价窗口继续）
+        const q = this._loadQueue();
+        if (!q.length) break;
+        const item = q[0];
+        const { model, difficulty } = this._selectModelForTask(item.text);
+        this.output.appendLine(`[router] 平价自动执行队列(剩余 ${q.length})：难度=${difficulty} 模型=${model || '(default)'}`);
+        try { this.bridge.callJs('addToast', `平价时段自动执行（剩余 ${q.length} 项 · 难度 ${difficulty}）…`, 'info'); } catch (e) { /* ignore */ }
+
+        // 全新会话执行本任务（不复用上一任务/计划的会话）。
+        this.sessionId = '';
+        this._rotateEpoch();
+        this.assembler.reset();
+        try { this.bridge.callJs('clearMessages'); } catch (e) { /* ignore */ }
+        if (item.cwd) { this.cwd = item.cwd; this.projectName = path.basename(item.cwd); this._emitProject(); }
+
+        await this._handleSend(JSON.stringify({
+          text: item.text,
+          permissionMode: item.permissionMode,
+          reasoningEffort: item.reasoningEffort,
+          disableThinking: item.disableThinking,
+          agent: item.agent,
+          model,
+          __autoRun: true, // 跳过高峰弹窗，避免自动执行时又被拦截
+        }));
+
+        // 按 id 精确出队（防止执行期间队列被用户改动导致误删）。
+        const after = this._loadQueue().filter((x) => x.id !== item.id);
+        this._saveQueue(after);
+        this._emitQueueStatus();
+      }
+    } finally {
+      this._queueRunning = false;
     }
   }
 
@@ -2193,7 +2693,7 @@ class MessageRouter {
 
     try {
       await this._ensureCwd();
-      const params = { sessionId: this.sessionId || '', cwd: this.cwd || '', model };
+      const params = { sessionId: this.sessionId || '', runtimeSessionEpoch: this.runtimeSessionEpoch || '', cwd: this.cwd || '', model };
       let data = null;
       let errMsg = null;
       // 结果以一行 JSON 经 onLine 回调抵达（getContextUsagePersistent 里的 console.log），
@@ -3337,6 +3837,7 @@ class MessageRouter {
     if (this.permission) this.permission.dispose();
     if (this.aiBridge) this.aiBridge.dispose();
     if (this._themeDisposable && this._themeDisposable.dispose) this._themeDisposable.dispose();
+    if (this._queueTimer) { try { clearInterval(this._queueTimer); } catch (e) { /* ignore */ } this._queueTimer = null; }
   }
 }
 
