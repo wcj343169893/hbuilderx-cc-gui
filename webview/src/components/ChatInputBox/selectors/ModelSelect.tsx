@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { AVAILABLE_MODELS, normalizeClaudeModelId, modelSupports1MContext, strip1MContextSuffix } from '../types';
 import type { ModelInfo } from '../types';
 import { readClaudeModelMapping } from '../../../utils/claudeModelMapping';
+import { STORAGE_KEYS } from '../../../types/provider';
 import { ProviderModelIcon } from '../../shared/ProviderModelIcon';
 import Switch from 'antd/es/switch';
 
@@ -134,11 +135,23 @@ export const ModelSelect = ({ value, onChange, models = AVAILABLE_MODELS, curren
   const buttonRef = useRef<HTMLButtonElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
+  // Reactive model mapping: re-read when provider switches update localStorage
+  const [modelMapping, setModelMapping] = useState(() => readClaudeModelMapping());
+  useEffect(() => {
+    const handleMappingChange = (event: Event) => {
+      const customEvent = event as CustomEvent<{ key: string }>;
+      if (customEvent.detail?.key === STORAGE_KEYS.CLAUDE_MODEL_MAPPING) {
+        setModelMapping(readClaudeModelMapping());
+      }
+    };
+    window.addEventListener('localStorageChange', handleMappingChange);
+    return () => window.removeEventListener('localStorageChange', handleMappingChange);
+  }, []);
+
   // Strip [1m] suffix for finding the model in the list
   const strippedValue = strip1MContextSuffix(value);
   const normalizedValue = currentProvider === 'claude' ? normalizeClaudeModelId(strippedValue) : strippedValue;
   const currentModel = models.find(m => m.id === normalizedValue) || models.find(m => m.id === strippedValue) || models[0];
-  const modelMapping = readClaudeModelMapping();
 
   const isSelectedModel = (modelId: string): boolean => {
     if (currentProvider !== 'claude') {
