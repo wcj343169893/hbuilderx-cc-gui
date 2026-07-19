@@ -415,6 +415,33 @@
   white-space: nowrap;
 }
 
+.subagent-stats {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.subagent-stat {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+}
+
+.subagent-stat-duration {
+  color: var(--color-task-duration, var(--text-secondary));
+}
+
+.subagent-stat-tokens {
+  color: var(--color-task-tokens, var(--text-secondary));
+}
+
 .subagent-details {
   margin: 0 4px 6px 32px;
   color: var(--text-secondary);

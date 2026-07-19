@@ -1,10 +1,11 @@
-import { memo, useEffect, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ToolInput, ToolResultBlock } from '../../types';
 import { normalizeToolName } from '../../utils/toolConstants';
 import { sendBridgeEvent } from '../../utils/bridge';
 import { useSubagentHistoryGetter, useSessionId, useGetToolResultRaw, type GetToolResultRawFn } from '../../contexts/SubagentContext';
 import SubagentProcessDetails from '../StatusPanel/SubagentProcessDetails';
+import { formatSubagentDuration } from '../StatusPanel/subagentProcess';
 
 const MONO_FONT_STYLE: React.CSSProperties = {
   fontFamily: "var(--cc-gui-code-font-family, var(--idea-editor-font-family, 'JetBrains Mono', 'Consolas', monospace))",
@@ -121,6 +122,15 @@ function shortenAgentId(agentId?: string): string | undefined {
   return agentId.length > 8 ? `${agentId.slice(0, 8)}…` : agentId;
 }
 
+function formatTokens(tokens?: number): string | undefined {
+  if (typeof tokens !== 'number' || tokens <= 0) return undefined;
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M tk`;
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}K tk`;
+  return `${tokens} tk`;
+}
+
+const STALL_THRESHOLD_MS = 90_000;
+
 const TaskExecutionBlock = memo(function TaskExecutionBlock({ name, input, result, toolId, isStreaming = false }: TaskExecutionBlockProps) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
@@ -176,12 +186,12 @@ const TaskExecutionBlock = memo(function TaskExecutionBlock({ name, input, resul
     && isAgentTool
     && Boolean(currentSessionId)
     && Boolean(toolId)
-    && isStreaming
     && !isCompleted
     && !history;
 
-  // Poll subagent history only while the tool is still actively streaming and
-  // we have not received history yet. Avoid keeping idle intervals alive.
+  // Poll subagent history while the task is still running (no tool_result yet).
+  // The main conversation stream may have ended, but subagent tasks can
+  // continue executing in the background — keep polling until they finish.
   useEffect(() => {
     if (!shouldPollHistory || !currentSessionId || !toolId) return;
     const timer = window.setInterval(() => {
@@ -194,6 +204,26 @@ const TaskExecutionBlock = memo(function TaskExecutionBlock({ name, input, resul
     }, 2_000);
     return () => window.clearInterval(timer);
   }, [agentId, currentSessionId, description, shouldPollHistory, toolId]);
+
+  // Live elapsed time counter: track how long this task has been visible without a result.
+  const [liveElapsedMs, setLiveElapsedMs] = useState(0);
+  const mountTimeRef = useRef(Date.now());
+  useEffect(() => {
+    if (isCompleted || !isStreaming) return;
+    mountTimeRef.current = Date.now();
+    setLiveElapsedMs(0);
+    const timer = window.setInterval(() => {
+      setLiveElapsedMs(Date.now() - mountTimeRef.current);
+    }, 1_000);
+    return () => window.clearInterval(timer);
+  }, [isCompleted, isStreaming]);
+
+  const effectiveDurationMs = isCompleted
+    ? (agentToolMeta.totalDurationMs ?? liveElapsedMs)
+    : (isStreaming ? liveElapsedMs : undefined);
+  const durationDisplay = formatSubagentDuration(effectiveDurationMs);
+  const tokensDisplay = formatTokens(agentToolMeta.totalTokens);
+  const isStalled = !isCompleted && !isStreaming && liveElapsedMs > STALL_THRESHOLD_MS;
 
   return (
     <div className="task-container">
@@ -227,7 +257,17 @@ const TaskExecutionBlock = memo(function TaskExecutionBlock({ name, input, resul
         </div>
 
         <div className="task-header-right">
-          <div className={`tool-status-indicator ${isError ? 'error' : isCompleted ? 'completed' : 'pending'}`} />
+          <div className="task-stats-container">
+            {durationDisplay !== null && (
+              <span className={`task-stat task-stat-duration ${isStalled ? 'task-stat-stalled' : ''}`}>
+                {isStalled ? '⚠ ' : ''}{isCompleted ? '✔ ' : ''}{durationDisplay}
+              </span>
+            )}
+            {tokensDisplay !== undefined && (
+              <span className="task-stat task-stat-tokens">{tokensDisplay}</span>
+            )}
+          </div>
+          <div className={`tool-status-indicator ${isError ? 'error' : isCompleted ? 'completed' : isStalled ? 'stalled' : 'pending'}`} />
         </div>
       </div>
 

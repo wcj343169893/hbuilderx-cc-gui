@@ -39,7 +39,7 @@ describe('TaskExecutionBlock polling', () => {
     vi.useRealTimers();
   });
 
-  it('does not start polling when the agent tool is no longer streaming', () => {
+  it('polls for subagent history even when the conversation is no longer streaming', () => {
     const setIntervalSpy = vi.spyOn(window, 'setInterval');
 
     const { container } = render(
@@ -56,7 +56,9 @@ describe('TaskExecutionBlock polling', () => {
 
     fireEvent.click(container.querySelector('.task-header') as HTMLElement);
 
-    expect(setIntervalSpy).not.toHaveBeenCalled();
+    // Polling should still start: the subagent may be running in the background
+    // even after the main conversation stream has ended.
+    expect(setIntervalSpy).toHaveBeenCalledTimes(1);
   });
 
   it('keeps the task header expandable without rendering a chevron icon', () => {

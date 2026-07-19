@@ -282,7 +282,8 @@ export function registerMessageCallbacks(
 
           smartMerged = preserveLastAssistantIdentity(prev, smartMerged, findLastAssistantIndex);
           smartMerged = preserveLatestMessagesOnShrink(prev, smartMerged, options.currentProviderRef.current);
-          return finalizeMessageList(prev, appendOptimisticMessageIfMissing(prev, smartMerged));
+          const final = finalizeMessageList(prev, appendOptimisticMessageIfMissing(prev, smartMerged));
+          return final;
         }
 
         // Streaming + !useBackendStreamingRender: always accept the backend snapshot
@@ -373,7 +374,9 @@ export function registerMessageCallbacks(
   window.updateMessages = (json, sequenceArg) => {
     // During session transition, ignore message updates from stale session
     // callbacks to prevent cleared messages from being restored
-    if (window.__sessionTransitioning) return;
+    if (window.__sessionTransitioning) {
+      return;
+    }
     const sequence = parseSequence(sequenceArg);
     const minAcceptedSequence = window.__minAcceptedUpdateSequence ?? 0;
     if (sequence != null && sequence < minAcceptedSequence) {

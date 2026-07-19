@@ -5,12 +5,19 @@ import type { SubagentHistoryResponse, SubagentInfo } from '../../types';
 import { sendBridgeEvent } from '../../utils/bridge';
 import { subagentStatusIconMap } from './types';
 import SubagentProcessDetails from './SubagentProcessDetails';
+import { formatSubagentDuration } from './subagentProcess';
+
+function formatTokens(tokens?: number): string | undefined {
+  if (typeof tokens !== 'number' || tokens <= 0) return undefined;
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M tk`;
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}K tk`;
+  return `${tokens} tk`;
+}
 
 interface SubagentListProps {
   subagents: SubagentInfo[];
   histories?: Record<string, SubagentHistoryResponse>;
   currentSessionId?: string | null;
-  isStreaming?: boolean;
 }
 
 interface SubagentRowProps {
@@ -25,6 +32,8 @@ interface SubagentRowProps {
 const SubagentRow = memo(({ subagent, isExpanded, history, canLoad, onToggle, t }: SubagentRowProps) => {
   const statusIcon = subagentStatusIconMap[subagent.status] ?? 'codicon-circle-outline';
   const statusClass = `status-${subagent.status}`;
+  const durationDisplay = formatSubagentDuration(subagent.totalDurationMs);
+  const tokensDisplay = formatTokens(subagent.totalTokens);
 
   const handleClick = useCallback(() => {
     onToggle(subagent.id);
@@ -43,6 +52,14 @@ const SubagentRow = memo(({ subagent, isExpanded, history, canLoad, onToggle, t 
         <span className="subagent-type">{subagent.type || t('statusPanel.subagentTab')}</span>
         <span className="subagent-description" title={subagent.prompt}>
           {subagent.description || subagent.prompt?.slice(0, 50)}
+        </span>
+        <span className="subagent-stats">
+          {durationDisplay !== null && (
+            <span className="subagent-stat subagent-stat-duration">{durationDisplay}</span>
+          )}
+          {tokensDisplay !== undefined && (
+            <span className="subagent-stat subagent-stat-tokens">{tokensDisplay}</span>
+          )}
         </span>
         <span className={`subagent-chevron codicon ${isExpanded ? 'codicon-chevron-down' : 'codicon-chevron-right'}`} />
       </button>
@@ -64,7 +81,7 @@ const SubagentRow = memo(({ subagent, isExpanded, history, canLoad, onToggle, t 
 
 SubagentRow.displayName = 'SubagentRow';
 
-const SubagentList = memo(({ subagents, histories = {}, currentSessionId, isStreaming = false }: SubagentListProps) => {
+const SubagentList = memo(({ subagents, histories = {}, currentSessionId }: SubagentListProps) => {
   const { t } = useTranslation();
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
@@ -92,14 +109,14 @@ const SubagentList = memo(({ subagents, histories = {}, currentSessionId, isStre
     if (!historiesRef.current[expandedId]) {
       requestHistory(subagent);
     }
-    if (!isStreaming || subagent.status !== 'running') return;
+    if (subagent.status !== 'running') return;
     const timer = window.setInterval(() => {
       const current = subagentsRef.current.find((item) => item.id === expandedId);
       if (!current || current.status !== 'running') return;
       requestHistory(current);
     }, 2_000);
     return () => window.clearInterval(timer);
-  }, [currentSessionId, expandedId, isStreaming, requestHistory]);
+  }, [currentSessionId, expandedId, requestHistory]);
 
   const historyById = useMemo(() => histories, [histories]);
 

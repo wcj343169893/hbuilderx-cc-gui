@@ -7,10 +7,19 @@ import { getPersistedExpanded, setPersistedExpanded } from '../../utils/expanded
 import { useSubagentHistoryGetter, useSessionId, useGetToolResultRaw, type GetToolResultRawFn } from '../../contexts/SubagentContext';
 import SubagentProcessDetails from '../StatusPanel/SubagentProcessDetails';
 import { ContentBlockRenderer } from '../MessageItem/ContentBlockRenderer';
+import { formatSubagentDuration } from '../StatusPanel/subagentProcess';
 
 // Constants extracted from magic numbers
 const MAX_SUMMARY_LENGTH = 120;
 const SUBAGENT_POLL_INTERVAL_MS = 2_000;
+const STALL_THRESHOLD_MS = 90_000;
+
+function formatTokens(tokens?: number): string | undefined {
+  if (typeof tokens !== 'number' || tokens <= 0) return undefined;
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M tk`;
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}K tk`;
+  return `${tokens} tk`;
+}
 
 interface AgentGroupBlockProps {
   agentBlock: ClaudeContentBlock;
@@ -124,7 +133,7 @@ const AgentGroupBlock = memo(function AgentGroupBlock({
 
   useEffect(() => {
     // Clear existing timer when dependencies change or conditions no longer met
-    if (!expanded || !currentSessionId || !toolId || !isStreaming || isCompleted || history) {
+    if (!expanded || !currentSessionId || !toolId || isCompleted || history) {
       if (pollingTimerRef.current !== null) {
         window.clearInterval(pollingTimerRef.current);
         pollingTimerRef.current = null;
@@ -150,7 +159,27 @@ const AgentGroupBlock = memo(function AgentGroupBlock({
         pollingTimerRef.current = null;
       }
     };
-  }, [agentId, currentSessionId, summary, expanded, history, isStreaming, isCompleted, toolId]);
+  }, [agentId, currentSessionId, summary, expanded, history, isCompleted, toolId]);
+
+  // Live elapsed time counter
+  const [liveElapsedMs, setLiveElapsedMs] = useState(0);
+  const mountTimeRef = useRef(Date.now());
+  useEffect(() => {
+    if (isCompleted || !isStreaming) return;
+    mountTimeRef.current = Date.now();
+    setLiveElapsedMs(0);
+    const timer = window.setInterval(() => {
+      setLiveElapsedMs(Date.now() - mountTimeRef.current);
+    }, 1_000);
+    return () => window.clearInterval(timer);
+  }, [isCompleted, isStreaming]);
+
+  const effectiveDurationMs = isCompleted
+    ? (agentToolMeta.totalDurationMs ?? liveElapsedMs)
+    : (isStreaming ? liveElapsedMs : undefined);
+  const durationDisplay = formatSubagentDuration(effectiveDurationMs);
+  const tokensDisplay = formatTokens(agentToolMeta.totalTokens);
+  const isStalled = !isCompleted && !isStreaming && liveElapsedMs > STALL_THRESHOLD_MS;
 
   return (
     <div className="task-container agent-group-container">
@@ -184,7 +213,17 @@ const AgentGroupBlock = memo(function AgentGroupBlock({
         </div>
 
         <div className="task-header-right">
-          <div className={`tool-status-indicator ${isError ? 'error' : isCompleted ? 'completed' : 'pending'}`} />
+          <div className="task-stats-container">
+            {durationDisplay !== null && (
+              <span className={`task-stat task-stat-duration ${isStalled ? 'task-stat-stalled' : ''}`}>
+                {isStalled ? '⚠ ' : ''}{isCompleted ? '✔ ' : ''}{durationDisplay}
+              </span>
+            )}
+            {tokensDisplay !== undefined && (
+              <span className="task-stat task-stat-tokens">{tokensDisplay}</span>
+            )}
+          </div>
+          <div className={`tool-status-indicator ${isError ? 'error' : isCompleted ? 'completed' : isStalled ? 'stalled' : 'pending'}`} />
           <span className={`codicon agent-group-chevron ${expanded ? 'codicon-chevron-up' : 'codicon-chevron-down'}`} />
         </div>
       </div>

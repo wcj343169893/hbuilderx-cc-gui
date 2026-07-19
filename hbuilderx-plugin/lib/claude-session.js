@@ -138,6 +138,42 @@ class ClaudeSessionAssembler {
     this._onAutoCompact = null;
   }
 
+  /**
+   * 加载历史消息到装配器内部消息列表，使后续 _pushMessages 全量包含历史 +
+   * 新消息，避免前端 preserveLatestMessagesOnShrink 因后端列表短于前端州
+   * 而将新消息错误地前置到列表头部（历史加载后装配器为空的本地回显错位）。
+   * @param {Array<{type:string,content:any,timestamp:number|string,raw?:object}>} messages
+   */
+  loadHistoryMessages(messages) {
+    if (!Array.isArray(messages)) return;
+    for (const msg of messages) {
+      const type = (msg.type || '').toLowerCase() === 'assistant' ? 'assistant' : 'user';
+      let content = '';
+      if (typeof msg.content === 'string') {
+        content = msg.content;
+      } else if (msg.raw && typeof msg.raw === 'object' && msg.raw.content) {
+        if (typeof msg.raw.content === 'string') content = msg.raw.content;
+        else if (Array.isArray(msg.raw.content)) {
+          content = msg.raw.content
+            .filter((/** @type {any} */ b) => b && b.type === 'text')
+            .map((/** @type {any} */ b) => b.text || '')
+            .join('\n');
+        }
+      }
+      // 含 tool_result 的 user 消息：保留 raw 以便 _trimRaw 提取关键字段
+      const hasToolResult = msg.raw && typeof msg.raw === 'object'
+        && Array.isArray(msg.raw.content)
+        && msg.raw.content.some((/** @type {any} */ b) => b && b.type === 'tool_result');
+      const raw = msg.raw || null;
+      this.messages.push({
+        type,
+        content: hasToolResult ? '[tool_result]' : content,
+        timestamp: msg.timestamp || Date.now(),
+        raw,
+      });
+    }
+  }
+
   /** 追加一条用户消息（本地回显，发送前调用）。 */
   addUserMessage(text) {
     // 新一轮对话开始：先复位上一轮的单轮累积态，否则本轮回复会并入上一条助手气泡

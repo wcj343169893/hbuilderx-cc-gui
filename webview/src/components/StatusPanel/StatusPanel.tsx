@@ -207,7 +207,7 @@ const StatusPanel = ({ todos, fileChanges, subagents, subagentHistories, current
       case 'todo':
         return <TodoList todos={todos} />;
       case 'subagent':
-        return <SubagentList subagents={subagents} histories={subagentHistories} currentSessionId={currentSessionId} isStreaming={isStreaming} />;
+        return <SubagentList subagents={subagents} histories={subagentHistories} currentSessionId={currentSessionId} />;
       case 'files':
         return (
           <FileChangesList

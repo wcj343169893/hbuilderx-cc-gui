@@ -112,6 +112,16 @@
     background-color: var(--color-error);
 }
 
+.tool-status-indicator.stalled {
+    background-color: var(--color-warning, #d97706);
+    animation: tool-status-pulse-warn 1.5s ease-in-out infinite;
+}
+
+@keyframes tool-status-pulse-warn {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+
 @keyframes tool-status-spin {
     to { transform: rotate(360deg); }
 }

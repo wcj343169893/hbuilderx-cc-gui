@@ -34,6 +34,38 @@
     flex-shrink: 0;
 }
 
+.task-stats-container {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.task-stat {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-tertiary);
+    white-space: nowrap;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+}
+
+.task-stat-duration {
+    color: var(--color-task-duration, var(--text-secondary));
+}
+
+.task-stat-tokens {
+    color: var(--color-task-tokens, var(--text-secondary));
+}
+
+.task-stat-stalled {
+    color: var(--color-warning, #d97706);
+    border-color: var(--color-warning, #d97706);
+    background: var(--color-warning-bg, rgba(217, 119, 6, 0.1));
+}
+
 .task-title-section {
     display: flex;
     align-items: center;
