@@ -1,3 +1,4 @@
+import { spawn as spawnProcess } from 'node:child_process';
 import { AsyncStream } from '../../utils/async-stream.js';
 import { loadClaudeSdk } from '../../utils/sdk-loader.js';
 import { createPreToolUseHook, normalizePermissionMode } from './permission-mode.js';
@@ -56,6 +57,34 @@ export function registerRuntimeSession(runtime, sessionId, callbacks) {
   promoteRuntimeToSession(runtime, sessionId, callbacks);
 }
 
+/**
+ * 兜底清理：按进程树强杀 Claude CLI 子进程及其全部后代。
+ *
+ * 中断一轮时，query.interrupt()/close() 只停止 SDK 那一轮并终结 CLI 进程本身，
+ * 但 CLI 通过 Bash 工具派生出来的孙进程（如 `node tests/e2e/*.mjs`、playwright/
+ * chromium 浏览器）不会被连带回收，会变成孤儿进程常驻后台（曾观察到单次中断遗留
+ * 16 个进程、~1.6GB）。这里在中断触发的 dispose 里按 pid 终结整棵树来兜底。
+ *
+ * 仅在「中断」路径调用（见 disposeRuntime 的 abortRequested 判定）；正常空闲回收时
+ * CLI 会随优雅退出自行带走子进程，无需强杀。
+ */
+export function killProcessTree(pid) {
+  if (!pid || !Number.isInteger(pid)) return;
+  try {
+    if (process.platform === 'win32') {
+      // /T 连带终结整棵进程树（含 Bash→node→playwright 等孙进程），/F 强制。
+      const killer = spawnProcess('taskkill', ['/PID', String(pid), '/T', '/F'], {
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+      killer.on('error', () => { /* taskkill 不存在/进程已退出：忽略 */ });
+    } else {
+      // POSIX 兜底：尽力而为直接杀该进程（不保证整树；本项目主用 Windows）。
+      try { process.kill(pid, 'SIGKILL'); } catch (_) { /* 已退出 */ }
+    }
+  } catch (_) { /* best-effort，绝不因清理失败而抛出 */ }
+}
+
 export async function disposeRuntime(runtime, callbacks) {
   if (!runtime || runtime.closed) return;
   console.log('[LIFECYCLE] disposeRuntime sessionId=' + (runtime.sessionId || '(new)')
@@ -74,6 +103,13 @@ export async function disposeRuntime(runtime, callbacks) {
     runtime.query?.close?.();
   } catch (err) {
     console.error('[LIFECYCLE] query.close() failed:', err?.message || err);
+  }
+
+  // 中断路径兜底：close() 不会连带回收 CLI 通过 Bash 派生的孙进程（e2e/浏览器等），
+  // 这里按进程树强杀 CLI，避免孤儿进程常驻。仅中断时执行（正常回收 CLI 会自行带走子进程）。
+  if (runtime.abortRequested && runtime.cliPid) {
+    console.log('[LIFECYCLE] killProcessTree cliPid=' + runtime.cliPid + ' (abort 清理孙进程)');
+    killProcessTree(runtime.cliPid);
   }
 
   removeRuntime(runtime, callbacks?.removeSession);
@@ -99,6 +135,7 @@ async function createRuntime(requestContext, callbacks) {
     activeTurnCount: 0,
     stderrLines: [],
     query: null,
+    cliPid: null, // Claude CLI 子进程 pid（由下方自定义 spawn 捕获），中断时用于按树清理
     inputStream: new AsyncStream(),
     titleGenerationAttempted: false
   };
@@ -139,6 +176,29 @@ async function createRuntime(requestContext, callbacks) {
         runtime.permissionModeState.value = mode;
       })]
     }]
+  };
+
+  // 自定义 CLI spawn：仅为拿到 Claude CLI 子进程的真实 pid（存到 runtime.cliPid），
+  // 以便中断时按进程树精确清理它派生的 Bash/浏览器等孙进程（见 killProcessTree）。
+  // 忠实复刻 SDK 默认 spawnLocalProcess 行为：SpawnOptions 已给出解析后的
+  // command/args/cwd/env/signal；stderr 走 pipe 并转发到上面的 options.stderr（供
+  // stderrLines 采集错误）；Node ChildProcess 满足 SDK 的 SpawnedProcess 接口。
+  const stderrHandler = options.stderr;
+  options.spawnClaudeCodeProcess = ({ command, args, cwd, env, signal }) => {
+    const child = spawnProcess(command, args, {
+      cwd,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      signal,
+      env,
+      windowsHide: true,
+    });
+    runtime.cliPid = child.pid || null;
+    if (child.stderr && typeof stderrHandler === 'function') {
+      child.stderr.on('data', (chunk) => {
+        try { stderrHandler(chunk); } catch (_) { /* ignore */ }
+      });
+    }
+    return child;
   };
 
   runtime.query = queryFn({
