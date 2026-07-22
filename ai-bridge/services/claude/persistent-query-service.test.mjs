@@ -195,6 +195,45 @@ test('resetRuntimePersistent disposes active turn runtime for interrupted old ep
   assert.equal(__testing.getSnapshot().activeTurnEpoch, null);
 });
 
+test('abortCurrentTurn calls query.interrupt() before disposing so the in-flight turn actually stops', async () => {
+  let interruptCalls = 0;
+  let closeCalls = 0;
+  const factory = {
+    runtimes: [],
+    queryFn({ prompt, options }) {
+      const runtime = {
+        prompt,
+        options,
+        closed: false,
+        setPermissionMode: async () => {},
+        setModel: async () => {},
+        setMaxThinkingTokens: async () => {},
+        async interrupt() { interruptCalls++; },
+        close() { closeCalls++; this.closed = true; },
+        async next() { return { done: true, value: undefined }; }
+      };
+      factory.runtimes.push(runtime);
+      return runtime;
+    }
+  };
+  __testing.setQueryFn(factory.queryFn);
+
+  const context = await __testing.buildRequestContext({
+    sessionId: '',
+    runtimeSessionEpoch: 'epoch-interrupt',
+    cwd: process.cwd(),
+    message: 'streaming turn to interrupt'
+  }, false);
+  const runtime = await __testing.acquireRuntime(context);
+  __testing.setActiveTurnRuntime(runtime);
+
+  await __testing.abortCurrentTurn();
+
+  assert.equal(interruptCalls, 1, 'query.interrupt() must be called exactly once');
+  assert.equal(runtime.closed, true, 'runtime must be disposed after interrupt');
+  assert.equal(__testing.getSnapshot().activeTurnEpoch, null, 'active turn runtime must be cleared');
+});
+
 test('restore-history continuation keeps runtime bound to restored session after reset of prior epoch', async () => {
   const factory = createQueryFactory();
   __testing.setQueryFn(factory.queryFn);

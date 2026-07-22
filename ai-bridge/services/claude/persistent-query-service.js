@@ -572,6 +572,31 @@ export async function abortCurrentTurn() {
   runtime.abortRequested = true;
   clearActiveTurnRuntime();
 
+  // 真正停止正在执行的这一轮。disposeRuntime 里的 inputStream.done()/query.close()
+  // 并不会中止一个已经在跑工具的轮次——底层 CLI 子进程会继续在后台执行 Bash 等工具，
+  // 表现为「已主动终止，但内部仍在执行」（PERMISSION_HOOK 在中断后仍持续触发即为此）。
+  // interrupt() 是 SDK 提供的控制请求，会让当前轮收尾并把控制权交回，才是真正的中断。
+  // 加 3s 超时兜底：interrupt 挂起时不至于拖死整个中断流程，后续 dispose 照常释放 runtime。
+  try {
+    if (!runtime.closed && typeof runtime.query?.interrupt === 'function') {
+      let interruptTimer;
+      try {
+        await Promise.race([
+          runtime.query.interrupt(),
+          new Promise((resolve) => {
+            interruptTimer = setTimeout(resolve, 3000);
+            if (interruptTimer.unref) interruptTimer.unref();
+          }),
+        ]);
+      } finally {
+        if (interruptTimer) clearTimeout(interruptTimer);
+      }
+    }
+  } catch (error) {
+    // Best-effort — interrupt 失败不阻断 dispose
+    console.error('[ABORT] query.interrupt() failed:', error?.message || error);
+  }
+
   try {
     if (!runtime.closed) {
       await disposeRuntime(runtime, { removeSession });

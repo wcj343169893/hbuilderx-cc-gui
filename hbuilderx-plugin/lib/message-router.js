@@ -1217,6 +1217,12 @@ class MessageRouter {
         // 停止自动重试（若正处于重试等待），再中断 daemon 当前轮。
         this._cancelRetryDelay();
         if (this.aiBridge) this.aiBridge.abort();
+        // 轮换 epoch：daemon 侧 abort 是 fire-and-forget，其 disposeRuntime 与「下一条发送」的
+        // acquireRuntime 存在竞态——若不换 epoch，下一条发送会命中同 epoch/同会话这个尚未完全释放的
+        // runtime，导致该轮瞬间以「无内容成功」收场却在后台继续执行，表现为「中断后再发指令，
+        // 看不到 agent 回复但内部已在执行」。换 epoch 后，下一条发送必落到全新 runtime（仍复用
+        // 原 sessionId 续接会话），彻底消除竞态。对齐 persistent-query-service 的「中断后换 epoch」设计。
+        this._rotateEpoch();
         // 中断后移除装配器中当前轮次的不完整助手消息，避免下次发送时
         // daemon 再推回旧 [MESSAGE] → _ensureAssistant 新建气泡重复显示整段历史。
         if (this.assembler.currentAssistant) {
