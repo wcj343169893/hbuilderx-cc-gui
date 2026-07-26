@@ -79,6 +79,18 @@
 
 ## 安装与使用
 
+> ⚠️ **重要：`webview` 和 `ai-bridge` 是本仓库「根目录」下的源码文件夹，不在 `hbuilderx-plugin/` 这个插件运行目录里。**
+> 如果你在插件目录里找不到它们，说明你只拿到了 `hbuilderx-plugin/`，没有完整仓库。要自构建 / 二次开发，请 **`git clone` 整个仓库**，并在**仓库根目录**执行下面的命令。
+>
+> ```text
+> hbuilderx-cc-gui/          ← 仓库根（git clone 后所在目录，命令都在这里执行）
+> ├── webview/               ← React 前端源码（构建产物 → hbuilderx-plugin/html/claude-chat.html）
+> ├── ai-bridge/             ← Node 桥接层源码（承载 Claude / Codex SDK）
+> └── hbuilderx-plugin/      ← 用 HBuilderX 打开并运行的「插件目录」（无 webview / ai-bridge 文件夹）
+> ```
+>
+> 纯使用者无需关心这两个文件夹，直接安装发布版插件即可。
+
 > 当前为开发 / 自构建方式运行，需先构建前端与安装桥接依赖。
 
 ### 1. 构建前端（生成 `hbuilderx-plugin/html/claude-chat.html`）
