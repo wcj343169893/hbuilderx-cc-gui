@@ -47,6 +47,7 @@ class AiBridgeClient {
     this._pending = new Map();
     this._readyResolve = null;
     this._readyPromise = null;
+    this._disposed = false; // dispose 后拒绝再自动拉起（路由器已弃用本客户端）
   }
 
   /** 启动 daemon，等待 ready 事件。 */
@@ -152,14 +153,26 @@ class AiBridgeClient {
 
   /**
    * 发送一个命令请求。
+   * daemon 不在（从未启动 / 已崩溃退出）时自动拉起自愈；启动失败则携带真实原因报错，
+   * 而非裸 "daemon 未启动"（该原因对用户定位问题无帮助——例如插件目录缺 ai-bridge/ 时
+   * 真实原因应为「未找到 ai-bridge 目录（daemon.js）」）。
    * @param {string} method 形如 "claude.send"
    * @param {object} params
    * @param {(line: string) => void} onLine 每行输出回调（标记行）
    * @returns {Promise<{ success: boolean, error?: string }>}
    */
-  request(method, params, onLine) {
+  async request(method, params, onLine) {
     if (!this.proc) {
-      return Promise.reject(new Error('daemon 未启动'));
+      if (this._disposed) {
+        return Promise.reject(new Error('daemon 已关闭（插件正在停用/重启）'));
+      }
+      // 自愈拉起：崩溃后下一次请求自动重启 daemon。start() 内部以 _readyPromise 去重，
+      // 并发请求只会拉起一次。启动失败把真实原因带给调用方（init 失败路径同样受益）。
+      try {
+        await this.start();
+      } catch (err) {
+        return Promise.reject(new Error(`daemon 启动失败: ${err && err.message ? err.message : err}`));
+      }
     }
     const id = String(++this._seq);
     return new Promise((resolve) => {
@@ -183,6 +196,7 @@ class AiBridgeClient {
 
   /** 优雅关闭 daemon。 */
   dispose() {
+    this._disposed = true;
     if (this.proc) {
       try { this.proc.stdin.end(); } catch (e) { /* ignore */ }
       const p = this.proc;
