@@ -24,7 +24,9 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createInterface } from 'readline';
 import { handleClaudeCommand } from './channels/claude-channel.js';
 import { handleCodexCommand } from './channels/codex-channel.js';
@@ -56,8 +58,30 @@ injectNetworkEnvVars();
 // Constants
 // =============================================================================
 
-// NOTE: Keep in sync with package.json version when updating.
-const DAEMON_VERSION = '1.0.0';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Resolve the plugin version from the HBuilderX plugin's package.json so the
+// daemon reports the same version as the plugin manifest (previously a hardcoded
+// constant that drifted out of sync on every release). Prefer the bundled layout
+// (<plugin>/ai-bridge -> <plugin>/package.json); fall back to the monorepo source
+// layout (<repo>/ai-bridge -> <repo>/hbuilderx-plugin/package.json) used in dev.
+function resolvePluginVersion() {
+  const candidates = [
+    path.join(__dirname, '..', 'package.json'),                            // bundled / deployed
+    path.join(__dirname, '..', 'hbuilderx-plugin', 'package.json'),        // monorepo source (dev)
+  ];
+  for (const p of candidates) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(p, 'utf8'));
+      if (pkg && typeof pkg.version === 'string' && pkg.version.trim()) {
+        return pkg.version.trim();
+      }
+    } catch (e) { /* try next candidate */ }
+  }
+  return '0.0.0'; // unknown — should not happen in practice
+}
+
+const DAEMON_VERSION = resolvePluginVersion();
 
 // =============================================================================
 // State
