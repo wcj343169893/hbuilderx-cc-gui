@@ -15,6 +15,22 @@ export interface ChangelogEntry {
 
 export const CHANGELOG_DATA: ChangelogEntry[] = [
   {
+    version: '0.2.4',
+    date: '2026-08-25',
+    content: {
+      en: `✨ Features
+- The version-update dialog now shows a single language based on the system language: Chinese on Chinese systems, English on all others (fallback), instead of always showing both languages at once
+
+🐛 Fixes
+- The ai-bridge daemon now reads its reported version from the plugin's package.json at runtime, so it always matches the plugin version instead of a hardcoded constant that drifted on every release`,
+      zh: `✨ 新功能
+- 版本更新弹窗按系统语言自动显示单一语言：中文系统显示中文，其他系统显示英文（保底），不再中英文同时展示
+
+🐛 修复
+- ai-bridge daemon 报告的版本号改为运行时读取插件 package.json，与插件版本保持一致，不再使用每次发版都会漂移的硬编码常量`,
+    },
+  },
+  {
     version: '0.2.3',
     date: '2026-08-15',
     content: {
