@@ -10,15 +10,16 @@ interface ChangelogDialogProps {
 }
 
 /**
- * Resolve content to display. Shows both EN and ZH when both exist,
- * otherwise shows whichever is available.
+ * Resolve content to display. Picks the language by system language:
+ * a Chinese system shows ZH, anything else shows EN (the fallback).
+ * If the preferred language is missing, falls back to the other one.
  */
 function resolveContent(entry: ChangelogEntry): string[] {
   const { en, zh } = entry.content;
-  const parts: string[] = [];
-  if (en) parts.push(en);
-  if (zh) parts.push(zh);
-  return parts;
+  const isChineseSystem = /^zh/i.test(navigator.language || '');
+  const preferred = isChineseSystem ? zh : en;
+  const fallback = isChineseSystem ? en : zh;
+  return [preferred || fallback].filter(Boolean);
 }
 
 /**
