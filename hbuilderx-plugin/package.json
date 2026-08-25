@@ -176,7 +176,8 @@
   },
   "dependencies": {},
   "scripts": {
-    "bundle": "node scripts/bundle.js"
+    "bundle": "node scripts/bundle.js",
+    "prebundle": "node scripts/generate-changelog-md.mjs"
   },
   "dcloudext": {
     "type": "hbuilderx",

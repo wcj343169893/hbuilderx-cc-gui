@@ -1,6 +1,8 @@
 // Changelog for the hbuilderx-cc-gui repository (HBuilderX 移植版)
-// 与 hbuilderx-plugin/changelog.md 保持同步（版本号以 hbuilderx-plugin/package.json 为准）。
-// 手动维护：构建的 prebuild 只生成 version.ts，不会覆盖本文件。
+// 本文件是变更日志的**唯一数据源**：hbuilderx-plugin/changelog.md（插件市场发布日志）
+// 由 hbuilderx-plugin/scripts/generate-changelog-md.mjs 在 `npm run bundle`（prebundle）时
+// 从各条目的 zh 内容自动生成——改日志只需改本文件，勿手改 changelog.md。
+// 版本号以 hbuilderx-plugin/package.json 为准；prebuild 只生成 version.ts，不会覆盖本文件。
 
 export interface ChangelogEntry {
   version: string;
@@ -13,6 +15,46 @@ export interface ChangelogEntry {
 
 export const CHANGELOG_DATA: ChangelogEntry[] = [
   {
+    version: '0.2.3',
+    date: '2026-08-15',
+    content: {
+      en: `🐛 Fixes
+- Fix sending after interrupting a session showing no reply while the command kept running in the background — abort only closed the input stream without stopping the turn, and the runtime epoch wasn't rotated, so the next send hit the stale runtime and instantly "succeeded" with no content. Interrupt now calls the SDK \`query.interrupt()\` to truly stop the turn and rotates the epoch so the next send lands on a fresh runtime and streams normally
+- Fix orphan-process pileup after interrupting (e.g. e2e node / playwright / chromium processes; up to ~16 processes ~1.6GB observed) — interrupt only killed the CLI process itself, not its spawned descendants. It now cleans up the whole process tree spawned by the CLI
+- Fix sending only reporting "daemon not started" and hiding the real cause — when the deployed plugin was missing the bundled ai-bridge/ (bundle not run) the daemon never started, and a mid-run crash never self-recovered, so every message stalled. Requests now auto-start the daemon if absent (concurrency-deduped, started once), startup failures carry the real reason (e.g. "ai-bridge directory not found (daemon.js)"), and a crashed daemon restarts on the next message; it is not started during plugin deactivate/restart`,
+      zh: `🐛 修复
+- 修复主动中断会话后再输入指令看不到 AI 回复、但命令仍在后台执行的问题——中断时 abort 只关闭了输入流、并未真正停止当前轮次，且中断后未轮换运行时会话纪元，下一条发送会撞上尚未释放干净的旧运行时、瞬间以「无内容成功」收场。现在中断会调用 SDK \`query.interrupt()\` 真正停止本轮，并轮换 epoch 让下一条发送落到全新运行时，正常流式回复
+- 修复中断会话后遗留大量孤儿进程（如 e2e 测试的 node、playwright / chromium 浏览器进程持续占用内存，曾观测单次中断残留约 16 个进程约 1.6GB）——中断只终结了 Claude CLI 进程本身，其经命令派生的子孙进程未被连带回收。现在中断时按进程树精确清理 CLI 派生的全部子进程
+- 修复发送消息只报「daemon 未启动」、掩盖真实原因——部署时若漏打包 ai-bridge/（未跑 bundle）daemon 从未启动，且运行中崩溃后不会自愈，之后每条消息都卡在这里。现在请求时发现 daemon 不在会自动拉起（并发去重，只拉一次），启动失败携带真实原因（如「未找到 ai-bridge 目录（daemon.js）」），运行中崩溃后下一条消息自动重启恢复；插件停用/重启期间不误拉起`,
+    },
+  },
+  {
+    version: '0.2.2',
+    date: '2026-07-20',
+    content: {
+      en: `✨ Features
+- Task cards & subagent cards (AgentGroup / Subagent) now show live elapsed time (second-level updates), token usage, and a stuck warning (auto-abort after 120s of silence)
+
+🐛 Fixes
+- Fix the message bubble disappearing when sending after opening a history session (assembler empty after loading history; \`_pushMessages\` sent only 1 message, making \`preserveLatestMessagesOnShrink\` mis-shrink and prepend the new message to the top)
+- Fix subagent/task status no longer updating after the main stream ends (removed the \`isStreaming\` guard from the polling condition)
+- Fix the previous incomplete assistant reply reappearing after interrupt_session + resend (removed leftover \`currentAssistant\` + \`onComplete()\` reset on the frontend)
+- Fix a new session silently doing nothing when the edited file belongs to no project — now prompts project selection instead
+- Fix subagent \`SpawnAgentTask\` not showing progress in the subagent list
+- Fix the model-select label not updating after switching a provider imported via CC Switch (\`ModelSelect\` didn't listen for \`localStorageChange\`)`,
+      zh: `✨ 新功能
+- 任务执行卡片、子代理卡片（AgentGroup / Subagent）显示实时耗时（秒级更新）、token 用量和僵死警告（120s 无响应自动 abort）
+
+🐛 修复
+- 修复打开历史会话后输入指令消息气泡消失不显示的问题（装配器加载历史后为空，\`_pushMessages\` 只发 1 条导致 \`preserveLatestMessagesOnShrink\` 误判收缩，把新消息前置到列表头部）
+- 修复主对话流结束后子代理/任务状态不再更新的问题（轮询条件移除 \`isStreaming\` 限制）
+- 修复中断会话（\`interrupt_session\`）后再发消息、上一条不完整的助手回复重复出现的问题（移除残留 \`currentAssistant\` + \`onComplete()\` 复位前端）
+- 修复新建会话时当前编辑文件不在任何项目、不再无为静默的问题，改为弹出项目选择
+- 修复子代理 \`SpawnAgentTask\` 执行时在子代理列表不显示进度状态的问题
+- 修复 CC Switch 导入供应商后切换供应商、模型选择下拉框标签不更新的问题（\`ModelSelect\` 未监听 \`localStorageChange\` 事件）`,
+    },
+  },
+  {
     version: '0.2.1',
     date: '2026-07-12',
     content: {
@@ -21,6 +63,7 @@ export const CHANGELOG_DATA: ChangelogEntry[] = [
 - Off-peak auto-execution of the queue: each task runs in a fresh session (no context bloat), model auto-picked by difficulty, execution permission mode selectable at queue time
 - In-chat "DeepSeek off-peak queue" panel (view / remove / clear)
 - Auto-retry on transient send errors (e.g. "API request failed", timeout, 5xx, network); configurable count/interval
+- New settings: auto-retry (toggle / count / interval), DeepSeek peak guard & off-peak auto-execution (toggles), and easy / hard task models
 - Status-bar icon tooltip shows the current version
 
 🐛 Fixes
@@ -36,6 +79,7 @@ export const CHANGELOG_DATA: ChangelogEntry[] = [
 - 平价时段自动分批执行队列：每个任务用全新会话执行（避免上下文膨胀），按难度自动选模型，入队时可指定执行权限模式
 - 会话界面「DeepSeek 平价执行队列」面板（查看 / 移除 / 清空）
 - 发送遇瞬时错误（如「API request failed」、超时、5xx、网络中断）自动重试，次数/间隔可在设置里配置
+- 设置项：自动重试（开关 / 次数 / 间隔）、DeepSeek 高峰守卫与平价自动执行（开关）、简单 / 复杂任务对应模型
 - 底部状态栏图标悬浮提示显示当前版本号
 
 🐛 修复
