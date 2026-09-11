@@ -1609,6 +1609,18 @@
         "label": "GPT-5.3-Codex",
         "description": "最新前沿智能编程模型，能力全面增强"
       },
+      "gpt56sol": {
+        "label": "GPT-5.6 Sol",
+        "description": "面向复杂专业任务的前沿模型"
+      },
+      "gpt56terra": {
+        "label": "GPT-5.6 Terra",
+        "description": "兼顾智能与成本的 GPT-5.6 模型"
+      },
+      "gpt56luna": {
+        "label": "GPT-5.6 Luna",
+        "description": "面向成本敏感场景优化的 GPT-5.6 模型"
+      },
       "gpt55": {
         "label": "GPT-5.5",
         "description": "最新前沿模型，能力进一步增强"
