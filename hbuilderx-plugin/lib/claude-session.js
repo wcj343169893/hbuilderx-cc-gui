@@ -443,6 +443,27 @@ class ClaudeSessionAssembler {
     }
   }
 
+  /**
+   * 把单轮用量挂到本轮助手消息的 raw.turnUsage（前端 MessageItem 据此显示本轮 token）。
+   * Codex 只在 turn.completed 给出整轮用量，且口径不适合换算上下文百分比，故走此路径而非 _handleUsage。
+   * 对齐 IDEA CodexMessageHandler.attachUsageToLastAssistant。
+   */
+  attachTurnUsage(turnUsage) {
+    if (!turnUsage || typeof turnUsage !== 'object') return;
+    let target = this.currentAssistant;
+    if (!target) {
+      for (let i = this.messages.length - 1; i >= 0; i--) {
+        const m = this.messages[i];
+        if (m.type === 'user' && m.content !== '[tool_result]') break; // 不越过本轮用户消息
+        if (m.type === 'assistant') { target = m; break; }
+      }
+    }
+    if (!target) return;
+    if (!target.raw) target.raw = { type: 'assistant', message: { content: [] } };
+    target.raw.turnUsage = turnUsage;
+    this._pushMessages();
+  }
+
   /** SDK 的 system(init) 消息携带 slash_commands（含 .claude/skills 生成的命令）→ 下发前端。 */
   _handleSystem(jsonStr) {
     try {

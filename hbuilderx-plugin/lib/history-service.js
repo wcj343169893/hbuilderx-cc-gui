@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const codexHistory = require('./codex-history-service');
 
 /**
  * 历史会话服务。
@@ -439,21 +440,28 @@ function scanProjectSessions(cwd) {
 
 /**
  * 加载历史数据（列表 + 收藏 + 自定义标题增强），形态对齐前端 HistoryData。
- * 仅支持 claude provider（HBuilderX 移植聚焦 Claude）；其它 provider 回空列表但 success:true。
+ * claude 读 ~/.claude/projects；codex 读 ~/.codex/sessions（codex-history-service，按项目 cwd 过滤）；
+ * 其它 provider 回空列表但 success:true。收藏/标题 sidecar 两者共用（按 sessionId 区分）。
  *
  * @param {string} cwd 当前工作区根
  * @param {string} provider provider 标识（默认 claude）
+ * @param {{ deep?: boolean }} [opts] deep=true 时先清空列表索引缓存再全量扫描（深度搜索）
  * @returns {object} HistoryData：{ success, sessions, total, favorites, currentProject, sessionCount }
  */
-function loadHistoryData(cwd, provider) {
+function loadHistoryData(cwd, provider, opts) {
   const prov = provider || 'claude';
+  const deep = !!(opts && opts.deep);
   try {
-    if (prov !== 'claude') {
-      // Codex 等暂不支持：回空但不报错，避免前端卡 loading
+    let sessions;
+    if (prov === 'claude') {
+      sessions = scanProjectSessions(cwd);
+    } else if (prov === 'codex') {
+      if (deep) codexHistory.clearListIndex();
+      sessions = codexHistory.scanProjectSessions(cwd);
+    } else {
       return { success: true, sessions: [], total: 0, favorites: {}, currentProject: cwd || '', sessionCount: 0 };
     }
 
-    const sessions = scanProjectSessions(cwd);
     const favorites = loadFavorites();
     const titles = loadTitles();
 
@@ -748,6 +756,31 @@ function deleteSessions(cwd, sessionIds) {
   return { success: true, mainDeletedCount: mainDeletedCount, total: ids.length };
 }
 
+/**
+ * 删除 Codex 会话（~/.codex/sessions 下的 rollout 文件）+ 清理收藏/标题 sidecar。
+ * @returns {{ success: boolean, deleted: number, error?: string }}
+ */
+function deleteCodexSession(sessionId) {
+  const r = codexHistory.deleteSession(sessionId);
+  if (r.success) {
+    removeFavorite(sessionId);
+    deleteTitle(sessionId);
+  }
+  return r;
+}
+
+/** 批量删除 Codex 会话，入参格式同 deleteSessions。 */
+function deleteCodexSessions(sessionIds) {
+  const ids = parseSessionIds(sessionIds);
+  let mainDeletedCount = 0;
+  for (const id of ids) {
+    try {
+      if (deleteCodexSession(id).success) mainDeletedCount++;
+    } catch (e) { /* 单个失败不影响其余 */ }
+  }
+  return { success: true, mainDeletedCount: mainDeletedCount, total: ids.length };
+}
+
 /** 解析批量删除的 sessionId 列表（去重、去非法），对齐 Java parseSessionIds。 */
 function parseSessionIds(content) {
   const result = [];
@@ -804,6 +837,10 @@ module.exports = {
   deleteSession,
   deleteSessions,
   exportSession,
+  deleteCodexSession,
+  deleteCodexSessions,
+  loadCodexSessionMessages: codexHistory.loadSessionMessages,
+  exportCodexSession: codexHistory.exportSession,
   toggleFavorite,
   updateTitle,
   deleteTitle,

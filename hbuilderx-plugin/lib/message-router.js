@@ -18,6 +18,8 @@ const deepseekPeak = require('./deepseek-peak');
 const agentService = require('./agent-service');
 const mcpService = require('./mcp-service');
 const dependencyService = require('./dependency-service');
+const { CodexQuotaService, resolveAccessMode: resolveCodexAccessMode } = require('./codex-quota-service');
+const codexRuntime = require('./codex-runtime');
 
 // ===== @文件补全（list_files）扫描参数 =====
 // 对齐 IDEA 版 FileSystemCollector 的硬编码跳过集 / 上限（含递归深度与单目录子项数）。
@@ -90,6 +92,8 @@ class MessageRouter {
     // 自动 compact：用量超 80% 阈值时触发
     this._pendingCompact = false;
     this.assembler.setAutoCompactCallback((usedTokens, maxTokens, percentage) => {
+      // /compact 是 Claude Code 的斜杠命令，codex exec 会把它当普通文本发给模型，故 Codex 下不触发
+      if (this.provider === 'codex') return;
       this.output.appendLine(`[router] 上下文用量 ${percentage}%，超过自动 compact 阈值，触发压缩`);
       if (!this._busy) {
         this._handleSend(JSON.stringify({ text: '/compact' }));
@@ -105,6 +109,9 @@ class MessageRouter {
     // 持久化偏好恢复（重启后保留上次选择），优先级：pref.json > 配置/默认
     this._prefs = prefs.load(hx);
     this.sessionId = '';
+    // sessionId 归属的 provider（'claude' | 'codex' | ''）。Claude sessionId 与 Codex threadId 互不相通，
+    // 会话中途切换 provider 时不能拿对方的 id 续接（否则 resume 失败），见 _handleSend。
+    this.sessionProvider = '';
     // 运行时会话纪元：daemon 用它隔离/失效 per-会话的持久 runtime（签名含 epoch + 归属断言）。
     // 对齐 Java SessionState.runtimeSessionEpoch（每会话一个 UUID）。此前 HBuilderX 端从不发送，
     // 导致 daemon 按 signature 复用匿名 runtime——新建会话会串到上一/其他会话的流（问题 4 根因）。
@@ -113,6 +120,9 @@ class MessageRouter {
     this.provider = this._prefs.provider || 'claude';
     this.model = this._prefs.model || '';
     this.permissionMode = this._prefs.permissionMode || this._readPermissionMode();
+    // Codex 思考深度 / 速度档位：前端每次发送都会随 payload 携带，这里仅作 payload 缺省时的兜底
+    this.reasoningEffort = '';
+    this.codexFastMode = 'normal';
     this.cwd = ''; // getWorkspaceFolders() 是异步的，构造里拿不到，改在 init()/发送前 await 解析
     this.projectName = ''; // 当前会话所属项目名（HBuilderX 可同时打开多个项目，顶部会话名后展示）
     this._busy = false;
@@ -123,6 +133,9 @@ class MessageRouter {
     // Provider 管理（cc-switch 兼容）：列表 + 当前激活 id，持久化在 pref.json
     this.providers = Array.isArray(this._prefs.providers) ? this._prefs.providers : [];
     this.activeProviderId = this._prefs.activeProviderId || '';
+
+    // Codex 订阅配额（「Codex 配额」子菜单），切换 Codex 供应商/撤销授权时 invalidate
+    this.codexQuota = new CodexQuotaService();
 
     // 主题同步：缓存上次推送给前端的 isDark，仅在变化时主动推送，避免抖动
     this._lastIsDark = null;
@@ -466,6 +479,8 @@ class MessageRouter {
       const config = this._readCodemossConfig();
       const codex = this._codexSection(config);
 
+      this.codexQuota.invalidate(); // 账号可能变更：丢弃上一账号的配额缓存
+
       if (id === CODEX_CLI_LOGIN_PROVIDER_ID) {
         codex.localConfigAuthorized = true;
         codex.current = CODEX_CLI_LOGIN_PROVIDER_ID;
@@ -488,6 +503,16 @@ class MessageRouter {
       this.output.appendLine(`[router] switch_codex_provider 异常: ${e && e.message}`);
       this.bridge.callJs('showError', `切换 Codex 供应商失败：${e && e.message}`);
     }
+  }
+
+  /**
+   * get_codex_subscription_quota：异步取配额快照并回 updateCodexSubscriptionQuota。
+   * CodexQuotaService.getSnapshot 永不 reject（失败返回 unavailable 快照），前端必定收到回包、结束 loading。
+   */
+  _handleGetCodexSubscriptionQuota() {
+    this.codexQuota.getSnapshot().then((snapshot) => {
+      this.bridge.callJs('updateCodexSubscriptionQuota', JSON.stringify(snapshot));
+    });
   }
 
   /** sort_codex_providers：content 为 { orderedIds }。仅记录仍存在的 id 到 providerOrder。 */
@@ -520,6 +545,7 @@ class MessageRouter {
       const wasCliLoginActive = currentId === CODEX_CLI_LOGIN_PROVIDER_ID;
 
       codex.localConfigAuthorized = false;
+      this.codexQuota.invalidate();
       if (wasCliLoginActive) {
         codex.current = fallbackProviderId && codex.providers[fallbackProviderId] ? fallbackProviderId : '';
       }
@@ -1267,6 +1293,13 @@ class MessageRouter {
         this._persist({ provider: this.provider });
         // 不回显 updateActiveProvider（见 bootstrap 说明）；仅用于路由 this.provider
         break;
+      // 移植缺口修复：此前无 case 被静默丢弃。发送 payload 已携带二者，这里记录为缺省兜底
+      case 'set_reasoning_effort':
+        this.reasoningEffort = typeof content === 'string' ? content.trim() : '';
+        break;
+      case 'set_codex_fast_mode':
+        this.codexFastMode = typeof content === 'string' && content.trim() ? content.trim() : 'normal';
+        break;
       case 'permission_decision':
         this.permission.handlePermissionDecision(content);
         break;
@@ -1407,6 +1440,10 @@ class MessageRouter {
         break;
       case 'revoke_codex_local_config_authorization':
         this._handleRevokeCodexLocalConfigAuthorization(content);
+        break;
+      // 移植缺口修复：此前无 case → 前端永远「正在加载配额...」
+      case 'get_codex_subscription_quota':
+        this._handleGetCodexSubscriptionQuota();
         break;
       // ===== 设置 → 基础配置 → 环境 =====
       case 'get_node_path':
@@ -1551,8 +1588,8 @@ class MessageRouter {
         this._handleLoadHistoryData(content);
         break;
       case 'deep_search_history':
-        // 无内存缓存层，深扫等同重新加载列表（对齐 Java：清缓存后 reload）
-        this._handleLoadHistoryData(content);
+        // 对齐 Java：清列表索引缓存后 reload（Claude 侧索引按 mtime+size 自校验，仅 Codex 需要清）
+        this._handleLoadHistoryData(content, { deep: true });
         break;
       case 'delete_session':
         this._handleDeleteSession(content);
@@ -1705,6 +1742,7 @@ class MessageRouter {
       this.output.appendLine(`[router] 新建会话: 当前空闲，直接重置 (msgCount=${this.assembler.messages.length})`);
     }
     this.sessionId = '';
+    this.sessionProvider = '';
     // 轮换 epoch 并释放旧 runtime：确保新会话不复用上一会话/其他会话仍绑定的 daemon runtime。
     this._rotateEpoch();
     this.assembler.reset();
@@ -1921,6 +1959,7 @@ class MessageRouter {
     }
 
     this.sessionId = sessionId;
+    this.sessionProvider = provider === 'codex' ? 'codex' : 'claude';
     // 加载历史会话前也轮换 epoch 并释放旧 runtime（对齐 Java：history load 前 resetPersistentRuntime）。
     // 否则续聊该历史会话时可能命中上一会话遗留的 daemon runtime，导致分析流串扰（问题 1/4）。
     this._rotateEpoch();
@@ -1929,25 +1968,41 @@ class MessageRouter {
     try {
       await this._ensureCwd();
 
+      // Codex：先读 rollout，续聊用 session_meta.id（即 SDK thread_id）作为会话 ID（对齐 Java loadCodexSession）
+      let codexLoaded = null;
+      if (provider === 'codex') {
+        codexLoaded = historyService.loadCodexSessionMessages(sessionId);
+        if (codexLoaded.found && codexLoaded.threadId) this.sessionId = codexLoaded.threadId;
+      }
+
       // 释放 transition guard（setSessionId 内部会 releaseSessionTransition），随后重放才不被丢弃。
-      this.bridge.callJs('setSessionId', sessionId);
+      this.bridge.callJs('setSessionId', this.sessionId);
+
+      if (codexLoaded) {
+        if (!codexLoaded.found) {
+          this.output.appendLine(`[router] load_session: 未找到 Codex 会话文件 ${sessionId}`);
+          // 不保留无效 threadId，否则下一条发送会去 resume 不存在的 thread 而报错；改为开新会话
+          this.sessionId = '';
+          this.sessionProvider = '';
+          this.bridge.callJs('historyLoadComplete');
+          this.bridge.callJs('addErrorMessage', `加载 Codex 会话失败：未在 ~/.codex/sessions 中找到会话 ${sessionId}`);
+          return;
+        }
+        this._replayHistoryMessages(codexLoaded.messages);
+        this.bridge.callJs('historyLoadComplete');
+        this.output.appendLine(`[router] load_session: codex ${this.sessionId} 重放 ${codexLoaded.messages.length} 条历史消息`);
+        return;
+      }
 
       if (provider !== 'claude') {
-        // Codex 等暂不支持 UI 重放：仅续聊，立即完成（不报错，避免卡 loading）
+        // 其它 provider 暂不支持 UI 重放：仅续聊，立即完成（不报错，避免卡 loading）
         this.output.appendLine(`[router] load_session: provider=${provider} 暂不支持 UI 重放，仅续聊`);
         this.bridge.callJs('historyLoadComplete');
         return;
       }
 
       const messages = historyService.loadSessionMessages(this.cwd || '', sessionId);
-      // 将历史消息注入装配器，使后续 _pushMessages 全量发送（历史 + 新），
-      // 避免前端 preserveLatestMessagesOnShrink 因后端消息数远少于前端州
-      // 而把新消息错误地前置到列表头部（本地回显错位）。
-      this.assembler.loadHistoryMessages(messages);
-      for (const msg of messages) {
-        // addHistoryMessage 期望 ClaudeMessage 对象（前端不做 JSON.parse），直接透传对象。
-        this.bridge.callJs('addHistoryMessage', msg);
-      }
+      this._replayHistoryMessages(messages);
       // 恢复上次会话的模型名和 token 用量（否则 reset() 清零后前端始终显示 0%）
       this._restoreTokenUsage();
       this.bridge.callJs('historyLoadComplete');
@@ -1957,6 +2012,18 @@ class MessageRouter {
       // 兜底释放 guard + 报错，前端不卡
       this.bridge.callJs('historyLoadComplete');
       this.bridge.callJs('addErrorMessage', `加载会话失败: ${e && e.message ? e.message : String(e)}`);
+    }
+  }
+
+  /** 把历史消息注入装配器并逐条 addHistoryMessage 重放到前端（Claude / Codex 共用）。 */
+  _replayHistoryMessages(messages) {
+    // 将历史消息注入装配器，使后续 _pushMessages 全量发送（历史 + 新），
+    // 避免前端 preserveLatestMessagesOnShrink 因后端消息数远少于前端州
+    // 而把新消息错误地前置到列表头部（本地回显错位）。
+    this.assembler.loadHistoryMessages(messages);
+    for (const msg of messages) {
+      // addHistoryMessage 期望 ClaudeMessage 对象（前端不做 JSON.parse），直接透传对象。
+      this.bridge.callJs('addHistoryMessage', msg);
     }
   }
 
@@ -1990,13 +2057,13 @@ class MessageRouter {
    * load_history_data / deep_search_history：扫描项目会话 + 合并收藏/标题，回 setHistoryData。
    * 出错也回 setHistoryData({success:false,error}) —— 前端据此显示错误而非卡 loading。
    */
-  async _handleLoadHistoryData(content) {
+  async _handleLoadHistoryData(content, opts) {
     const provider = (typeof content === 'string' && content) ? content : 'claude';
     this._historyProvider = provider;
     let data;
     try {
       await this._ensureCwd();
-      data = historyService.loadHistoryData(this.cwd || '', provider);
+      data = historyService.loadHistoryData(this.cwd || '', provider, opts);
       this.output.appendLine(`[router] load_history_data: provider=${provider} sessions=${(data.sessions || []).length}`);
     } catch (e) {
       this.output.appendLine(`[router] load_history_data 异常: ${e && e.message}`);
@@ -2018,6 +2085,11 @@ class MessageRouter {
     const sessionId = typeof content === 'string' ? content.trim() : '';
     if (!sessionId) return;
     try {
+      if (this._historyProvider === 'codex') {
+        const r = historyService.deleteCodexSession(sessionId);
+        this.output.appendLine(`[router] delete_session: codex ${sessionId} deleted=${r.deleted} ${r.error ? 'err=' + r.error : ''}`);
+        return;
+      }
       await this._ensureCwd();
       const r = historyService.deleteSession(this.cwd || '', sessionId);
       this.output.appendLine(`[router] delete_session: ${sessionId} main=${r.mainDeleted} agents=${r.agentFilesDeleted} ${r.error ? 'err=' + r.error : ''}`);
@@ -2029,6 +2101,11 @@ class MessageRouter {
   /** delete_sessions：批量删除。content 为 JSON 数组字符串。前端已乐观更新，无需回列表。 */
   async _handleDeleteSessions(content) {
     try {
+      if (this._historyProvider === 'codex') {
+        const r = historyService.deleteCodexSessions(content);
+        this.output.appendLine(`[router] delete_sessions: codex deleted=${r.mainDeletedCount}/${r.total}`);
+        return;
+      }
       await this._ensureCwd();
       const r = historyService.deleteSessions(this.cwd || '', content);
       this.output.appendLine(`[router] delete_sessions: deleted=${r.mainDeletedCount}/${r.total}`);
@@ -2053,7 +2130,9 @@ class MessageRouter {
     let result;
     try {
       await this._ensureCwd();
-      if (this._historyProvider !== 'claude') {
+      if (this._historyProvider === 'codex') {
+        result = historyService.exportCodexSession(sessionId, title);
+      } else if (this._historyProvider !== 'claude') {
         result = { error: '当前 provider 暂不支持导出' };
       } else {
         result = historyService.exportSession(this.cwd || '', sessionId, title);
@@ -2227,21 +2306,51 @@ class MessageRouter {
     const customWd = (this._prefs.customWorkingDir || '').trim();
     const effectiveCwd = (customWd && fs.existsSync(customWd)) ? customWd : this.cwd;
 
-    const params = {
-      message: text,
-      sessionId: this.sessionId || '',
-      // 运行时会话纪元：daemon 据此隔离/复用持久 runtime，杜绝跨会话/跨项目串流（问题 4）。
-      runtimeSessionEpoch: this.runtimeSessionEpoch || '',
-      cwd: effectiveCwd,
-      permissionMode: payload.permissionMode || this.permissionMode,
-      // 模型优先级：payload.model（队列按难度自动选的模型）> 激活 provider 主模型 > UI 选择。
-      model: payload.model || this._activeProviderModel() || this.model || '',
-      openedFiles: null,
-      agentPrompt: (payload.agent && payload.agent.prompt) || null,
-      streaming: true,
-      disableThinking: payload.disableThinking === true,
-      reasoningEffort: payload.reasoningEffort || null,
-    };
+    // 按当前 provider 分流（对齐 IDEA SessionSendService.sendToCodex / sendToClaude）。
+    // 移植缺口修复：此前一律走 claude.send，Codex 用户命中 Claude 的「API Key not configured」→「供应商未配置」。
+    // payload.__route 供内部调用强制指定（DeepSeek 平价队列固定走 Claude）。
+    const route = payload.__route === 'claude' || payload.__route === 'codex'
+      ? payload.__route
+      : (this.provider === 'codex' ? 'codex' : 'claude');
+    // 会话 id 归属另一 provider（会话中途切换了 provider）时无法续接，本轮起新会话
+    let resumeId = this.sessionId || '';
+    if (resumeId && this.sessionProvider && this.sessionProvider !== route) {
+      this.output.appendLine(`[router] 会话 ${resumeId} 属于 ${this.sessionProvider}，本轮改走 ${route}，以新会话发送`);
+      resumeId = '';
+    }
+
+    let method;
+    let params;
+    let tempFiles = [];
+    if (route === 'codex') {
+      const prepared = this._prepareCodexSend(payload, text, resumeId, effectiveCwd);
+      if (prepared.error) {
+        this.output.appendLine(`[router] codex send 前置检查失败: ${prepared.error}`);
+        this.assembler.onError(prepared.error);
+        return;
+      }
+      method = 'codex.send';
+      params = prepared.params;
+      tempFiles = prepared.tempFiles;
+    } else {
+      method = 'claude.send';
+      params = {
+        message: text,
+        sessionId: resumeId,
+        // 运行时会话纪元：daemon 据此隔离/复用持久 runtime，杜绝跨会话/跨项目串流（问题 4）。
+        runtimeSessionEpoch: this.runtimeSessionEpoch || '',
+        cwd: effectiveCwd,
+        permissionMode: payload.permissionMode || this.permissionMode,
+        // 模型优先级：payload.model（队列按难度自动选的模型）> 激活 provider 主模型 > UI 选择。
+        model: payload.model || this._activeProviderModel() || this.model || '',
+        openedFiles: null,
+        agentPrompt: (payload.agent && payload.agent.prompt) || null,
+        streaming: true,
+        disableThinking: payload.disableThinking === true,
+        reasoningEffort: payload.reasoningEffort || null,
+      };
+    }
+    const lineProcessor = route === 'codex' ? codexRuntime.processCodexOutputLine : processOutputLine;
 
     // 告知装配器本轮生效模型，使 [USAGE] 能按该模型上下文窗口换算百分比
     this.assembler.setModel(params.model);
@@ -2253,7 +2362,7 @@ class MessageRouter {
     const MAX_RETRIES = retryCfg.enabled ? retryCfg.maxRetries : 0; // 额外重试次数（总尝试 = 1 + MAX_RETRIES）
     const RETRY_DELAY_MS = retryCfg.delayMs;                        // 每次重试前等待（固定间隔）
 
-    this.output.appendLine(`[router] send: model=${params.model || '(default)'} mode=${params.permissionMode} cwd=${params.cwd || '(empty!)'} sessionId=${params.sessionId || '(新)'}`);
+    this.output.appendLine(`[router] send(${route}): model=${params.model || '(default)'} mode=${params.permissionMode} cwd=${params.cwd || '(empty!)'} sessionId=${resumeId || '(新)'}`);
     this._busy = true;
     this._sendStartAt = Date.now();
     this._sendCanceled = false; // 用户中断（interrupt_session）标志：置真则停止重试
@@ -2277,12 +2386,24 @@ class MessageRouter {
         const attemptState = { lastNodeError: undefined, hadSendError: false, errorText: null, sawContent: false };
         const onLine = (line) => {
           try {
-            processOutputLine(line, (type, p) => {
+            lineProcessor(line, (type, p) => {
               if (this.runtimeSessionEpoch !== sendEpoch) return; // 会话已被重置/切换：丢弃过期流事件
-              if (type === 'session_id') this.sessionId = p;
+              if (type === 'session_id') {
+                this.sessionId = p;
+                this.sessionProvider = route;
+              }
               if (type === '__error') {
                 // 先记下错误，待判定不再重试后再交给装配器展示（见循环末尾），避免重试时先弹错。
                 attemptState.errorText = p;
+                return;
+              }
+              // Codex 专有事件：状态提示（重连 / 审批拒绝）与整轮用量
+              if (type === 'status') {
+                try { this.bridge.callJs('updateStatus', p); } catch (e) { /* ignore */ }
+                return;
+              }
+              if (type === 'codex_usage') {
+                try { this.assembler.attachTurnUsage(codexRuntime.buildTurnUsage(JSON.parse(p))); } catch (e) { /* ignore */ }
                 return;
               }
               if (CONTENT_EVENT_TYPES.has(type)) attemptState.sawContent = true;
@@ -2296,14 +2417,14 @@ class MessageRouter {
           }
         };
 
-        const result = await this.aiBridge.request('claude.send', params, onLine);
+        const result = await this.aiBridge.request(method, params, onLine);
         if (this.runtimeSessionEpoch !== sendEpoch) { this.output.appendLine(`[router] send 结果返回后 epoch 已变更 (sendEpoch=${sendEpoch} curEpoch=${this.runtimeSessionEpoch})，终止本轮`); break; }
         const errText = attemptState.errorText
           || (!result.success ? (result.error || attemptState.lastNodeError || 'Unknown error') : null);
         this.output.appendLine(`[router] send 完成(第 ${attempt + 1} 次): success=${result.success} error=${errText || '(none)'} sawContent=${attemptState.sawContent}`);
 
         const canRetry = !!errText
-          && this._isRetryableSendError(errText)
+          && this._isRetryableSendError(route === 'codex' ? this._codexRawError(errText) : errText)
           && !attemptState.sawContent   // 已产出内容则不重试，避免重复回复
           && attempt < MAX_RETRIES
           && !this._sendCanceled;
@@ -2318,6 +2439,8 @@ class MessageRouter {
           } catch (e) { /* ignore */ }
           // 重置本轮助手累积态，保证重试从干净状态开始（不动 messages 里已回显的用户气泡）。
           try { this.assembler._beginTurn(); } catch (e) { /* ignore */ }
+          // Codex：失败前若已建好 thread，重试续接它，避免每次重试都另起一个空 thread
+          if (route === 'codex' && this.sessionProvider === 'codex' && this.sessionId) params.threadId = this.sessionId;
           await this._interruptibleDelay(delayMs);
           if (this.runtimeSessionEpoch !== sendEpoch) { this.output.appendLine(`[router] 重试等待期间 epoch 已变更，终止`); break; } // 等待期间会话已被重置/切换
           if (this._sendCanceled) { this.output.appendLine('[router] 重试等待期间被用户中断'); this.assembler.onComplete(); break; } // 等待期间被中断
@@ -2343,6 +2466,7 @@ class MessageRouter {
       }
     } finally {
       clearInterval(heartbeat);
+      codexRuntime.cleanupFiles(tempFiles); // Codex 图片附件临时文件
       const totalMs = this._sendStartAt != null ? (Date.now() - this._sendStartAt) : 0;
       const wasCanceled = this._sendCanceled;
       this._busy = false;
@@ -2382,6 +2506,68 @@ class MessageRouter {
     if (!Number.isFinite(delaySec) || delaySec < 1) delaySec = 1;
     if (delaySec > 60) delaySec = 60;
     return { enabled, maxRetries, delayMs: Math.round(delaySec * 1000) };
+  }
+
+  /**
+   * 组装 codex.send 参数（移植 CodexSDKBridge.sendMessage 的宿主侧部分）。
+   * 运行模式读自 ~/.codemoss/config.json codex 段：
+   *   - inactive：未授权任何访问方式 → 返回 error（对齐 IDEA 的 codexLocalAccessNotAuthorized）；
+   *   - cli_login：不带 key/配置覆盖，codex CLI 使用 ~/.codex/auth.json 的原生登录态；
+   *   - managed：供应商 configToml/authJson/messageEnvVars → configOverrides/apiKey/env（不落盘到 ~/.codex）。
+   * @returns {{ params?: object, tempFiles?: string[], error?: string }}
+   */
+  _prepareCodexSend(payload, text, threadId, cwd) {
+    const runtime = resolveCodexAccessMode(os.homedir());
+    if (runtime.access === 'inactive') {
+      return { error: codexRuntime.CODEX_ACCESS_NOT_AUTHORIZED_MESSAGE };
+    }
+
+    let creds = { configOverrides: null, apiKey: '', env: {}, warnings: [] };
+    if (runtime.access === 'managed') {
+      const name = (runtime.provider && runtime.provider.name) || runtime.currentId;
+      try {
+        creds = codexRuntime.buildCodexCredentials(runtime.provider);
+      } catch (e) {
+        return { error: `Codex 供应商「${name}」配置有误：${e && e.message ? e.message : e}` };
+      }
+      for (const w of creds.warnings) this.output.appendLine(`[router] codex 供应商「${name}」: ${w}`);
+      if (!creds.apiKey && !creds.configOverrides) {
+        this.output.appendLine(`[router] codex 供应商「${name}」未配置 config.toml / OPENAI_API_KEY，将沿用 codex CLI 自身配置`);
+      }
+    }
+
+    const images = codexRuntime.saveImageAttachments(payload.attachments);
+    if (images.skipped > 0) {
+      this.output.appendLine(`[router] codex 仅支持图片附件，已忽略 ${images.skipped} 个非图片/无效附件`);
+    }
+
+    const params = {
+      message: codexRuntime.appendAgentPrompt(text, payload.agent && payload.agent.prompt),
+      threadId: threadId || '',
+      cwd: cwd || '',
+      permissionMode: payload.permissionMode || this.permissionMode,
+      model: codexRuntime.resolveCodexModel(payload.model || this.model),
+      baseUrl: '',
+      apiKey: creds.apiKey,
+      // codex-channel 负责把 'max' 映射为 codex 的 'xhigh'
+      reasoningEffort: payload.reasoningEffort || this.reasoningEffort || 'medium',
+      serviceTier: codexRuntime.resolveServiceTier(payload.codexFastMode || this.codexFastMode),
+      attachments: images.entries,
+      configOverrides: creds.configOverrides,
+    };
+    // 供应商环境变量经 daemon 的 params.env 注入（仅本请求期间生效，结束后还原）
+    if (Object.keys(creds.env).length) params.env = creds.env;
+    this.output.appendLine(`[router] codex 模式=${runtime.access}${runtime.access === 'managed' ? `(${runtime.currentId})` : ''} threadId=${params.threadId || '(新)'} effort=${params.reasoningEffort} tier=${params.serviceTier || 'default'} images=${images.entries.length}`);
+    return { params, tempFiles: images.files };
+  }
+
+  /**
+   * 从 Codex 错误文案中取原始错误（ai-bridge buildErrorPayload 形如「Codex error:\n- Error message: xxx\n\n请检查网络…」）。
+   * 重试判定只看原始错误：通用文案末尾固定带 "network" 提示，直接匹配会把模型不存在等确定性错误也当作瞬时错误反复重试。
+   */
+  _codexRawError(errText) {
+    const m = /- Error message:\s*(.*)/.exec(String(errText || ''));
+    return m ? m[1] : String(errText || '');
   }
 
   /** 判断一次发送错误是否属于「瞬时可重试」：命中可重试特征且未命中明确的不可重试（鉴权等）特征。 */
@@ -2567,6 +2753,7 @@ class MessageRouter {
           disableThinking: item.disableThinking,
           agent: item.agent,
           model,
+          __route: 'claude', // DeepSeek 队列任务固定走 Claude 链路，不受当前 provider（可能是 Codex）影响
           __autoRun: true, // 跳过高峰弹窗，避免自动执行时又被拦截
         }));
 
