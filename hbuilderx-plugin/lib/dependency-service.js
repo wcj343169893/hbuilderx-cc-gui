@@ -33,8 +33,70 @@ const SDK_DEFS = {
     version: 'latest',
     dependencies: [],
     fallbackVersions: ['0.117.0', '0.116.0', '0.115.0'],
+    // 平台二进制包（@openai/codex-win32-x64 等）解压后近 200MB，国内网络 3 分钟常常下不完
+    installTimeoutMs: 10 * 60 * 1000,
   },
 };
+
+const DEFAULT_INSTALL_TIMEOUT_MS = 3 * 60 * 1000;
+
+// Codex CLI 平台二进制包：与 @openai/codex-sdk 的 PLATFORM_PACKAGE_BY_TARGET / findCodexPath 对齐
+const CODEX_PLATFORM_TARGETS = {
+  'win32-x64': { pkg: '@openai/codex-win32-x64', triple: 'x86_64-pc-windows-msvc' },
+  'win32-arm64': { pkg: '@openai/codex-win32-arm64', triple: 'aarch64-pc-windows-msvc' },
+  'linux-x64': { pkg: '@openai/codex-linux-x64', triple: 'x86_64-unknown-linux-musl' },
+  'linux-arm64': { pkg: '@openai/codex-linux-arm64', triple: 'aarch64-unknown-linux-musl' },
+  'darwin-x64': { pkg: '@openai/codex-darwin-x64', triple: 'x86_64-apple-darwin' },
+  'darwin-arm64': { pkg: '@openai/codex-darwin-arm64', triple: 'aarch64-apple-darwin' },
+};
+
+function codexPlatformTarget() {
+  const platform = process.platform === 'android' ? 'linux' : process.platform;
+  return CODEX_PLATFORM_TARGETS[`${platform}-${process.arch}`] || null;
+}
+
+/**
+ * 校验 codex-sdk 能否找到 codex CLI 二进制（复刻 SDK findCodexPath 的解析方式）。
+ * 背景：npm install 超时被杀时，平台包可能只解压出 vendor/ 而缺 package.json；随后 --force 重试
+ * 会「成功」但保留这个残缺目录 → 依赖面板显示已安装，发送时 SDK 报
+ * 「Unable to locate Codex CLI binaries」，Codex 完全不可用。
+ * @returns {{ ok: boolean, reason?: string, platformDir?: string }}
+ */
+function verifyCodexBinary(sdkId = 'codex-sdk') {
+  const target = codexPlatformTarget();
+  if (!target) return { ok: true }; // 不支持的平台交给 SDK 自己报错
+  const codexDir = path.join(sdkDir(sdkId), 'node_modules', '@openai', 'codex');
+  if (!fs.existsSync(path.join(codexDir, 'package.json'))) return { ok: false, reason: '缺少 @openai/codex 包' };
+  // 按 Node 模块查找顺序（@openai/codex 自身 node_modules → 顶层 node_modules）逐个用 fs 检查。
+  // 不用 require.resolve：它缓存成功结果，宿主长驻进程里目录被删/重装后仍返回旧路径。
+  const candidates = [
+    path.join(codexDir, 'node_modules', ...target.pkg.split('/')),
+    path.join(sdkDir(sdkId), 'node_modules', ...target.pkg.split('/')),
+  ];
+  const platformDir = candidates.find((dir) => fs.existsSync(path.join(dir, 'package.json')));
+  if (!platformDir) {
+    const partial = candidates.find((dir) => fs.existsSync(dir));
+    return {
+      ok: false,
+      reason: partial ? `${target.pkg} 不完整（缺 package.json，疑似下载中断）` : `缺少平台包 ${target.pkg}`,
+      platformDir: partial,
+    };
+  }
+  const platformPkgJson = path.join(platformDir, 'package.json');
+  const root = path.join(path.dirname(platformPkgJson), 'vendor', target.triple);
+  const exe = process.platform === 'win32' ? 'codex.exe' : 'codex';
+  const hasNew = fs.existsSync(path.join(root, 'bin', exe)) && fs.existsSync(path.join(root, 'codex-package.json'));
+  const hasLegacy = fs.existsSync(path.join(root, 'codex', exe));
+  if (!hasNew && !hasLegacy) {
+    return { ok: false, reason: `${target.pkg} 中缺少 codex 可执行文件`, platformDir: path.dirname(platformPkgJson) };
+  }
+  return { ok: true };
+}
+
+/** 安装后/状态检查时的完整性校验（目前只有 codex-sdk 需要，claude-sdk 恒为 ok）。 */
+function verifyInstall(sdkId) {
+  return sdkId === 'codex-sdk' ? verifyCodexBinary(sdkId) : { ok: true };
+}
 
 function dependenciesDir() {
   return path.join(os.homedir(), '.codemoss', 'dependencies');
@@ -72,9 +134,16 @@ function getStatus() {
     const entry = { id, name: def.name, status: 'not_installed', hasUpdate: false };
     try {
       if (fs.existsSync(dir)) {
-        entry.status = 'installed';
-        entry.installedVersion = readInstalledVersion(id);
-        entry.installPath = dir;
+        // 残缺安装（如 codex 平台二进制缺失）按未安装上报，让用户看到「安装」按钮重装，
+        // 而不是显示已安装、发送时才报 Unable to locate Codex CLI binaries
+        const verified = verifyInstall(id);
+        if (verified.ok) {
+          entry.status = 'installed';
+          entry.installedVersion = readInstalledVersion(id);
+          entry.installPath = dir;
+        } else {
+          entry.errorMessage = verified.reason;
+        }
       }
     } catch (e) { /* ignore */ }
     out[id] = entry;
@@ -269,19 +338,30 @@ async function install(p) {
 
     const specs = buildPackageSpecs(def, version);
     const maxRetries = 2;
+    const timeoutMs = def.installTimeoutMs || DEFAULT_INSTALL_TIMEOUT_MS;
     let lastErr = '';
     let lastLogs = '';
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       if (attempt > 0) log(`\n🔄 重试 ${attempt}/${maxRetries} ...`);
+      // 残缺的平台包目录（上次超时中断留下）npm 不会修复，必须先删掉才能重新完整解压；
+      // 删掉后 lock 仍记着该包已装，不带 --force 的 npm install 直接跳过它，故清理过就同时加 --force
+      const cleaned = removeBrokenPlatformPackage(sdkId, log);
       const args = ['install', '--include=optional', '--prefix', dir];
-      if (attempt > 0) args.push('--force'); // 重试用 --force 覆盖
+      if (attempt > 0 || cleaned) args.push('--force'); // 重试用 --force 覆盖
       args.push(...specs);
       log(`npm ${args.join(' ')}`);
 
-      const { code, out } = await runNpm(nodePath, args, { cwd: dir, onLine: log, timeoutMs: 3 * 60 * 1000 });
+      const { code, out } = await runNpm(nodePath, args, { cwd: dir, onLine: log, timeoutMs });
       lastLogs = out;
       if (code === 0) {
+        const verified = verifyInstall(sdkId);
+        if (!verified.ok) {
+          lastErr = `安装不完整：${verified.reason}`;
+          log(`⚠️ ${lastErr}`);
+          if (attempt === maxRetries) break;
+          continue;
+        }
         const installedVersion = readInstalledVersion(sdkId);
         log('✅ 安装完成');
         log(`已安装版本: ${installedVersion || '(未知)'}`);
@@ -293,15 +373,38 @@ async function install(p) {
           logs: out,
         };
       }
-      lastErr = code === -2 ? 'npm install 超时（3 分钟）' : `npm install 失败，退出码: ${code}`;
-      if (attempt === maxRetries) {
-        return { success: false, sdkId, error: lastErr, logs: out };
-      }
+      lastErr = code === -2 ? `npm install 超时（${Math.round(timeoutMs / 60000)} 分钟）` : `npm install 失败，退出码: ${code}`;
+    }
+    // 超时/残缺时清掉半截平台包，避免状态检查误判；提示可配置 npm 镜像加速
+    removeBrokenPlatformPackage(sdkId, log);
+    if (sdkId === 'codex-sdk') {
+      lastErr += '。Codex CLI 二进制较大，网络较慢时可先执行 npm config set registry https://registry.npmmirror.com 再重试';
     }
     return { success: false, sdkId, error: lastErr, logs: lastLogs };
   } catch (e) {
     log(`ERROR: ${e && e.message}`);
     return { success: false, sdkId, error: e && e.message };
+  }
+}
+
+/**
+ * 删除残缺的 codex 平台包目录（有目录但解析不到 package.json / 可执行文件）。
+ * @returns {boolean} 是否删除了目录
+ */
+function removeBrokenPlatformPackage(sdkId, log) {
+  if (sdkId !== 'codex-sdk') return false;
+  const verified = verifyCodexBinary(sdkId);
+  if (verified.ok || !verified.platformDir) return false;
+  // 路径穿越防护：只删 dependencies 目录内的路径
+  const target = path.resolve(verified.platformDir);
+  if (!target.startsWith(path.resolve(sdkDir(sdkId)) + path.sep)) return false;
+  try {
+    fs.rmSync(target, { recursive: true, force: true });
+    log(`已清理残缺的平台包: ${target}（${verified.reason}）`);
+    return true;
+  } catch (e) {
+    log(`清理残缺平台包失败: ${e && e.message}`);
+    return false;
   }
 }
 
@@ -404,6 +507,7 @@ module.exports = {
   dependenciesDir,
   sdkDir,
   getStatus,
+  verifyInstall,
   install,
   uninstall,
   getVersions,
