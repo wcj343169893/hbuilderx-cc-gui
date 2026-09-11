@@ -155,10 +155,12 @@ export class CodexPermissionMapper {
     switch (core) {
       case UnifiedPermissionMode.SANDBOX:
         // Sandbox: Read-only mode (always prompt when attempting to write)
+        // Codex CLI v0.149 起移除了 'untrusted'（传入即报错退出），其「执行前询问」语义已并入 'on-request'
+        //（对齐上游 jetbrains-cc-gui）。审批仍经 codex-event-handler 的 approval bridge 转给前端。
         return {
           skipGitRepoCheck: true,
           sandbox: 'read-only',
-          approvalPolicy: 'untrusted'
+          approvalPolicy: 'on-request'
         };
 
       case UnifiedPermissionMode.YOLO:
@@ -173,10 +175,11 @@ export class CodexPermissionMapper {
       default:
         // Default: Allow workspace writes but still prompt before executing risky actions
         // On Windows, use danger-full-access since sandbox is experimental
+        // 'untrusted' 已被 Codex CLI v0.149+ 移除，见上方 SANDBOX 分支说明
         return {
           skipGitRepoCheck: true,
           sandbox: onWindows ? 'danger-full-access' : 'workspace-write',
-          approvalPolicy: 'untrusted'
+          approvalPolicy: 'on-request'
         };
     }
   }

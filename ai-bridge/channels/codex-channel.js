@@ -24,7 +24,8 @@ export async function handleCodexCommand(command, args, stdinData) {
           apiKey,
           reasoningEffort,
           serviceTier,
-          attachments  // Image attachments (local_image format)
+          attachments,  // Image attachments (local_image format)
+          configOverrides  // 受管供应商的 config.toml 覆盖（宿主解析后下发）
         } = stdinData;
         await codexSendMessage(
           message,
@@ -36,7 +37,8 @@ export async function handleCodexCommand(command, args, stdinData) {
           apiKey || '',
           (reasoningEffort === 'max' ? 'xhigh' : (reasoningEffort || 'medium')),
           serviceTier || '',
-          attachments || []  // Pass attachments to message service
+          attachments || [],  // Pass attachments to message service
+          configOverrides || null
         );
       } else {
         await codexSendMessage(args[0], args[1], args[2], args[3], args[4]);

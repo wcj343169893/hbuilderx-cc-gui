@@ -30,6 +30,7 @@ import { fileURLToPath } from 'node:url';
 import { createInterface } from 'readline';
 import { handleClaudeCommand } from './channels/claude-channel.js';
 import { handleCodexCommand } from './channels/codex-channel.js';
+import { abortActiveCodexTurn } from './services/codex/message-service.js';
 import { loadClaudeSdk, isClaudeSdkAvailable } from './utils/sdk-loader.js';
 import {
   sendMessagePersistent,
@@ -600,6 +601,10 @@ async function processRequest(request) {
         'utf8'
       );
       if (targetId) {
+        // Codex 轮次：中止 runStreamed，codex.send 随即以错误收尾并发出 done（无进行中轮次时 no-op）
+        if (abortActiveCodexTurn()) {
+          _originalStderrWrite('[daemon] Aborted active Codex turn\n', 'utf8');
+        }
         // Fire-and-forget: disposeRuntime will cause the queued processRequest
         // to throw and emit its own done signal. We don't need to await here
         // because the Java side already completes its futures in sendAbort().

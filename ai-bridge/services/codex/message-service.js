@@ -32,6 +32,32 @@ import { collectAgentsInstructions } from './codex-agents-loader.js';
 import { createInitialEventState, processCodexEventStream } from './codex-event-handler.js';
 
 // ---------------------------------------------------------------------------
+// Active turn tracking (daemon abort)
+// ---------------------------------------------------------------------------
+
+// 当前正在执行的 Codex 轮次的 AbortController。daemon 模式下 abort 请求绕过命令队列直接到达，
+// 需经此句柄中止 runStreamed（SDK 会随 signal 结束 codex CLI 子进程）。
+// 此前 turnAbortController 仅为 sendMessage 局部变量，daemon 的 abort 只能中断 Claude，
+// Codex 轮次点「停止」后仍在后台继续执行。
+let activeTurnAbortController = null;
+
+/**
+ * 中止当前 Codex 轮次（无进行中轮次时为 no-op）。
+ * @returns {boolean} 是否确实触发了中止
+ */
+export function abortActiveCodexTurn() {
+  const controller = activeTurnAbortController;
+  if (!controller) return false;
+  activeTurnAbortController = null;
+  try {
+    controller.abort();
+  } catch (error) {
+    logDebug('Codex', 'Abort active turn failed:', error?.message || error);
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // sendMessage
 // ---------------------------------------------------------------------------
 
@@ -48,6 +74,8 @@ import { createInitialEventState, processCodexEventStream } from './codex-event-
  * @param {string} reasoningEffort - Reasoning effort level (optional)
  * @param {string} serviceTier - Codex service tier; "fast" matches Codex CLI /fast (optional)
  * @param {Array} attachments - Image attachments in local_image format (optional)
+ * @param {object|null} configOverrides - 受管供应商 config.toml 解析出的配置覆盖（经 SDK 转为 --config），
+ *   用于不改写用户 ~/.codex/config.toml 的前提下让该供应商生效（optional）
  */
 export async function sendMessage(
   message,
@@ -59,7 +87,8 @@ export async function sendMessage(
   apiKey = null,
   reasoningEffort = 'medium',
   serviceTier = null,
-  attachments = []
+  attachments = [],
+  configOverrides = null
 ) {
   let streamStarted = false;
   let streamEnded = false;
@@ -103,10 +132,19 @@ export async function sendMessage(
     if (apiKey) {
       codexOptions.apiKey = apiKey;
     }
+    if (configOverrides && typeof configOverrides === 'object' && !Array.isArray(configOverrides)
+        && Object.keys(configOverrides).length > 0) {
+      codexOptions.config = { ...configOverrides };
+      logDebug('Codex', 'Provider config override keys:', Object.keys(configOverrides).join(','));
+    }
     if (serviceTier && serviceTier.trim() !== '') {
       const sdkServiceTier = serviceTier.trim();
+      const baseConfig = codexOptions.config || {};
+      const baseFeatures = baseConfig.features && typeof baseConfig.features === 'object' ? baseConfig.features : {};
       codexOptions.config = {
+        ...baseConfig,
         features: {
+          ...baseFeatures,
           fast_mode: true
         },
         service_tier: sdkServiceTier
@@ -242,6 +280,7 @@ export async function sendMessage(
     }
 
     const turnAbortController = new AbortController();
+    activeTurnAbortController = turnAbortController;
     const { events } = await thread.runStreamed(runInput, {
       signal: turnAbortController.signal
     });
@@ -318,7 +357,13 @@ export async function sendMessage(
 
     const errorPayload = buildErrorPayload(error);
     console.error('[SEND_ERROR]', JSON.stringify(errorPayload));
+    // daemon 模式下 stderr 与 stdout 分流（非 IDEA 版单进程 redirectErrorStream），
+    // 宿主只解析 stdout 行，故同时写一份到 stdout，否则错误被吞、界面只剩空回复
+    //（与 claude persistent-query-service 的双写做法一致）。
+    console.log('[SEND_ERROR]', JSON.stringify(errorPayload));
     console.log(JSON.stringify(errorPayload));
+  } finally {
+    activeTurnAbortController = null;
   }
 }
 
