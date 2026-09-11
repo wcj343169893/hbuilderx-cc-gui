@@ -15,6 +15,34 @@ export interface ChangelogEntry {
 
 export const CHANGELOG_DATA: ChangelogEntry[] = [
   {
+    version: '0.2.5',
+    date: '2026-09-12',
+    content: {
+      en: `✨ Features
+- Codex history sessions: the history panel now lists Codex sessions for the current project (including subdirectories) from ~/.codex/sessions; opening one replays the conversation (messages, tool calls and results, reasoning summaries, images) and continues in the same thread. Delete, export, favorites and custom titles are supported. Titles prefer Codex's own session names and skip slash commands such as /clear, and the new session format written by Codex CLI 0.149+ is supported
+- Add GPT-5.6 Sol / Terra / Luna to the Codex model list
+
+🐛 Fixes
+- Fix Codex messages always failing with "provider not configured" — every send was routed to Claude. Sends now go to Codex when Codex is selected: either the Codex CLI login (your own ~/.codex config) or a managed Codex provider (base URL / API key / model applied as per-request overrides, ~/.codex is never modified). Reasoning effort and fast mode take effect, images are passed through, and per-turn token usage is shown
+- Fix Codex quota staying on "Loading quota..." forever (the request was never handled); it now reads rate limits from recent sessions or the ChatGPT usage API, and reports API-key mode / unavailable states clearly
+- Fix stopping a Codex reply not taking effect — the codex process kept running in the background and later sends stalled; interrupt now terminates the current Codex turn
+- Fix Codex failing on Codex CLI 0.149+ because approval_policy "untrusted" was removed; mapped to "on-request" (aligned with upstream)
+- Fix Codex errors not being shown to the user (e.g. relay out of balance, 401)
+- Fix a half-installed Codex SDK (download interrupted by the timeout) still showing as "installed" and failing at runtime — the dependency panel now verifies the platform package and codex binary, reports broken installs as not installed, cleans them up and reinstalls; the Codex SDK install timeout is raised to 10 minutes, with an npmmirror hint on failure`,
+      zh: `✨ 新功能
+- Codex 历史会话：历史面板可列出当前项目（含子目录）在 ~/.codex/sessions 下的 Codex 会话，点开即重放对话（消息、工具调用与结果、推理摘要、图片）并在原 thread 上续聊；支持删除、导出、收藏与自定义标题。标题优先使用 Codex 自己的会话名、跳过 /clear 等斜杠命令，并兼容 Codex CLI 0.149+ 的新会话格式
+- Codex 模型列表新增 GPT-5.6 Sol / Terra / Luna
+
+🐛 修复
+- 修复使用 Codex 发送消息总是提示「供应商未配置」——此前所有消息都被错误地发给了 Claude。现在选择 Codex 时真正走 Codex：支持「Codex CLI 登录」（使用你自己的 ~/.codex 配置）与 Codex 供应商（地址 / API Key / 模型按单次请求覆盖，不改写 ~/.codex）；思考深度与快速模式生效，支持图片，并显示每轮 token 用量
+- 修复 Codex 配额一直停在「正在加载配额...」（请求此前无人处理）：现在从最近会话或 ChatGPT 用量接口读取额度，API Key 模式 / 不可用时给出明确提示
+- 修复停止 Codex 回复不生效——codex 进程仍在后台运行、之后发送卡住；现在中断会真正终止本轮 Codex
+- 修复 Codex CLI 0.149+ 移除 approval_policy "untrusted" 后发送直接报错，改用 "on-request"（对齐上游）
+- 修复 Codex 出错（如中转余额不足、401）时界面不显示错误原因
+- 修复 Codex SDK 下载被超时打断后「看起来已安装」但实际无法运行——依赖面板现在会校验平台包与 codex 可执行文件，残缺安装显示为未安装并在重装时自动清理；Codex SDK 安装超时放宽到 10 分钟，失败时提示可改用 npmmirror 镜像`,
+    },
+  },
+  {
     version: '0.2.4',
     date: '2026-08-25',
     content: {
