@@ -167,11 +167,14 @@ git merge up-v0.4.7                # 解冲突 → 补后端 → 验收 → 合�
 
 `webview` 构建产物是**单文件 HTML**（`webview/scripts/copy-dist.mjs` 把 `dist/index.html` 同时拷给 IDEA 与 HBuilderX）。这不是偷懒：`hbuilderx-plugin/lib/webview-host.js:92` 是 `webview.html = <字符串>`——**HBuilderX webview 吃的是 HTML 字符串，没有基准 URL，相对路径资源无法解析**，所以一切必须内联。
 
-B4 的 TokenTracker dashboard（含 vendored 组件、10 语言 i18n、品牌资源、3D 热力图）、KaTeX，以及 B5/B6 的多引擎 UI 都会显著撑大这个文件。对策已定：
+**实测基线（2026-09-12）：当前产物 5.81 MB（gzip 1.63 MB）**，其中 mermaid 全家桶 2.6 MB（45%，本应懒加载却被 `vite-plugin-singlefile` 拍平成必加载）、10 份语言包 754 KB。详细构成、拆分可行性与三条路线见 `docs/plans/2026-09-12-webview-asset-splitting.md`，并已备好一次性探针 `docs/testing/probe-hbuilderx-webview-assets/`。
+
+B4 的 TokenTracker dashboard（含 vendored 组件、10 语言 i18n、品牌资源、3D 热力图）、KaTeX，以及 B5/B6 的多引擎 UI 都会在此基础上继续加码。对策已定：
 
 1. **仪表盘独立入口**：`webview` 增加第二个 Vite 入口（如 `usage.html`）→ 产物 `hbuilderx-plugin/html/usage.html`，由宿主在用户打开用量面板时**按需**创建 webview（独立 view 或独立 tab），主面板 HTML 不受影响。数据仍走 `tt_proxy`，与上游一致。
 2. **大资产不进构建**：宠物精灵图等运行时资产由宿主读盘后以 data URL 经桥接下发（见宠物方案），不参与 webview 构建。
 3. **每批次验收记录产物体积**，主面板 HTML 设一个告警阈值，超了就先拆入口再继续。
+4. **先行瘦身（与移植批次解耦，建议插在 B0）**：语言包只内联当前语言（省约 580 KB）、mermaid 不再被拍平（省约 2.6 MB）。这两项做完，产物约从 5.81 MB 降到 2.6 MB，再叠加仪表盘才有余量。
 
 ### 进程与资源风险
 

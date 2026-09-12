@@ -1,0 +1,22 @@
+{
+  "id": "cqsort-webview-asset-probe",
+  "name": "cqsort-webview-asset-probe",
+  "displayName": "Webview 外部资源能力探针",
+  "description": "一次性探针：检测 HBuilderX webview 能否加载外部 js/css（file:// / base href / 本地 http），用于决定 CC GUI 前端产物能否拆分",
+  "version": "0.0.1",
+  "publisher": "cqsort",
+  "engines": { "HBuilderX": "^4.0" },
+  "main": "./extension",
+  "activationEvents": ["onCommand:extension.probeWebviewAssets"],
+  "contributes": {
+    "commands": [
+      { "command": "extension.probeWebviewAssets", "title": "探测 Webview 外部资源能力" }
+    ],
+    "viewsContainers": {
+      "rightside": [{ "id": "probe.container", "title": "资源探针" }]
+    },
+    "views": {
+      "probe.container": [{ "id": "probe.view", "name": "资源探针", "title": "资源探针" }]
+    }
+  }
+}
