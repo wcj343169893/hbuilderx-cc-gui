@@ -199,7 +199,8 @@ if (/src\/utils\/icons\/(folder-icons|tech-icons-[123])\.ts$/.test(id)) return '
 2. `e2e` `resume-replay.spec.js > 回放历史 assistant/tool_result 不产生幽灵气泡或重复`（助手气泡数多于预期；基线上失败得更严重）
 3. `tsc -p tsconfig.test.json` 在 `useMessageSender.context.test.ts` 有一处 `codexFastMode` 可选性类型报错
 
-这三项应单独处理，不在本次改动范围内。
+这三项应单独处理，不在本次改动范围内 —— 已整理成清单（症状 / 复现命令 / 定位 / 建议修法）：
+`docs/plans/2026-09-12-known-test-failures.md`，并归入移植方案 B0。
 
 ### 还能继续做的
 
