@@ -6,8 +6,11 @@
     <!-- CSP: 'unsafe-inline' is required for script-src because Java/JCEF injects JS at runtime
          (sendToJava bridge, clipboard handler, font/language/theme config, console forwarding).
          style-src 'unsafe-inline' is needed for dynamically applied CSS variables and theme styles.
+         script-src 还需 blob:：HBuilderX 版把 mermaid 整包移出了单文件产物，运行时经资源通道
+         取回源码后用 blob URL 动态 import（见 src/utils/webviewAssets.ts）。内容来自插件自身
+         目录、由宿主白名单校验后下发；在已有 'unsafe-inline' 的前提下不额外放大攻击面。
          TODO: Migrate to nonce-based CSP for stronger XSS protection. -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data: https://cc-gui-font.local; connect-src 'self'; frame-src 'none';" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data: https://cc-gui-font.local; connect-src 'self'; frame-src 'none';" />
     <title>Claude Chat Webview</title>
     <!-- Set theme data-theme attribute immediately before React loads -->
     <!-- Note: Background color is injected as inline style on the HTML tag by Java; only data-theme needs to be set here -->

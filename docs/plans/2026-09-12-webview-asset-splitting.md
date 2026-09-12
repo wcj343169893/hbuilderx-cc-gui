@@ -124,8 +124,8 @@ G 和 H 决定保底路线是否成立：只要 G 可用，**桥接本身就能�
 
 ## 六、下一步
 
-1. 跑探针，把 A~H 结果回填到本文档（路线就此确定）。
-2. 无论结果如何，先做「语言包按需」+「mermaid 不再拍平」，这两项吃掉大约 3.2 MB。
+1. 跑探针，把 A~H 结果回填到本文档（决定是否再叠加路线 1/2）。
+2. ~~无论结果如何，先做「语言包按需」+「mermaid 不再拍平」~~ —— **已完成，见第七节（5.81 MB → 2.17 MB）**。
 3. 路线确定后，再决定 TokenTracker 仪表盘是走「独立 webview 入口」（单文件路线下的必要妥协）还是直接作为一条普通路由按需加载（路线 1/2 下更自然）——移植方案 B4 的验收条款相应更新。
 
 ### 复现实测的构建配置
@@ -141,3 +141,68 @@ rollupOptions: { output: { manualChunks(id) {
 if (/src\/i18n\/locales\/[\w-]+\.json$/.test(id)) return 'data-locales';
 if (/src\/utils\/icons\/(folder-icons|tech-icons-[123])\.ts$/.test(id)) return 'data-icons';
 ```
+
+---
+
+## 七、已实施（2026-09-12）
+
+第四节「无论选哪条都该先做的两件事」已落地，走的是**路线 3（桥接即资源通道）**，不依赖任何平台能力，探针结果出来后还能再叠加路线 1/2。
+
+### 实测收益
+
+| 产物 | 体积 |
+|---|---:|
+| 改动前 | 5.81 MB |
+| **现在（默认 `npm run build`：mermaid 外置 + 语言包按需）** | **2.17 MB（−63%）** |
+| 上游兼容模式（`npm run build:inline`：mermaid 内联 + 语言包按需） | 5.01 MB |
+
+拆出来的部分按需加载，放在 `hbuilderx-plugin/html/chunks/`（gitignored，构建产物）：
+
+- `mermaid-bundle.js` 3.99 MB —— 首次遇到图表时才取
+- `locale-<lng>.json` × 7 ≈ 0.63 MB —— 只在切到该语言时才取
+
+拆解来看：语言包按需省 0.80 MB（5.81→5.01），mermaid 外置再省 2.84 MB（5.01→2.17）。
+
+### 机制
+
+```
+前端 fetchWebviewAsset(name)            webview/src/utils/webviewAssets.ts
+  → sendToJava('get_webview_asset')
+  → message-router case                hbuilderx-plugin/lib/message-router.js
+  → readWebviewAsset(name)             hbuilderx-plugin/lib/webview-assets.js（名字白名单 + 后缀白名单 + 越界校验 + 16MB 上限）
+  → callJs('onWebviewAsset', json)
+  → 前端 blob URL 动态 import（JS）/ JSON.parse（语言包）
+```
+
+- **mermaid**：`MarkdownBlock` 的 `getMermaid()` 改为「先走资源通道 + blob import，失败再走内联兜底（仅 inline 模式存在）」。两条都失败时保留原始代码块，不报错、不卡 loading。
+- **语言包**：`i18n/config.ts` 只静态内置 zh / zh-TW / en，其余 7 种通过 i18next 的自定义 backend 经资源通道取；取不到则回落 `fallbackLng: 'en'`。**调用点零改动**（不走 i18next backend 以外的 hack），后续 merge 上游的语言切换代码不会冲突。
+- **mermaid 整包必须 `inlineDynamicImports`**：mermaid 内部按图表类型做了大量动态 import（flowDiagram / cytoscape / katex / wardley…），而 blob URL 没有可解析的基准地址，保留这些 chunk 运行时会取不到 —— 所以单独构建成一个自包含文件（代价是 3.99 MB 比原先内联的 2.6 MB 更大，因为全部图表类型都被内联进来；若日后走路线 1/2 有真实 URL，可恢复按图表类型的懒加载，并把这 3.99 MB 拆细）。
+
+### 过程中发现的真正拦路石：我们自己的 CSP
+
+`webview/index.html` 的 CSP 是 `script-src 'self' 'unsafe-inline'`，**blob: 脚本被它挡掉**，报
+`Refused to load the script 'blob:…'`。也就是说即便平台支持，这条路线也会被自家 CSP 拦死。已改为
+`script-src 'self' 'unsafe-inline' blob:`：在已有 `'unsafe-inline'` 的前提下不额外放大攻击面，
+而且下发内容来自插件自身目录、经宿主白名单校验。**注意：探针如果测出 blob import 不可用，先确认被测页面的 CSP，别误判成平台不支持。**
+
+### 验证
+
+- `webview` 单测：新增 `src/utils/webviewAssets.test.ts`（7 例：桥接缺失即时返回、非法名字不发请求、并发合并、宿主回 null、超时、JSON 解析失败）—— 全绿
+- 宿主单测：新增 `hbuilderx-plugin/lib/webview-assets.test.js`（5 例：路径穿越、后缀白名单、非字符串/超长名字、缺失资源、真实读取）—— 全绿（`node --test`）
+- e2e：新增 `e2e/tests/webview-assets.spec.js` 两例 —— ①带 mermaid 代码块的回复渲染出 SVG（真实走通道 + blob import + 真实 chunk 文件）②宿主取不到资源时降级为代码块、不卡 loading —— 全绿。harness 里的 `get_webview_asset` 直接复用生产实现 `lib/webview-assets.js`
+- 契约校验：新增事件 `get_webview_asset` 已有后端 case，缺口数仍是原来的 26（未新增）
+- 两种构建模式都验证可产出：`npm run build`（2.17 MB）/ `npm run build:inline`（5.01 MB）
+
+跑测试时发现两处**与本次改动无关的既有失败**（在改动前的基线上同样失败，已核对）：
+
+1. `webview` 单测 `ModelSelect.test.tsx > rerender 后应读取最新的 Claude 模型映射`（期望 `glm-5`，实际 `Zhipuglm-4`）
+2. `e2e` `resume-replay.spec.js > 回放历史 assistant/tool_result 不产生幽灵气泡或重复`（助手气泡数多于预期；基线上失败得更严重）
+3. `tsc -p tsconfig.test.json` 在 `useMessageSender.context.test.ts` 有一处 `codexFastMode` 可选性类型报错
+
+这三项应单独处理，不在本次改动范围内。
+
+### 还能继续做的
+
+- 探针结果若证明有真实 URL 可用（路线 1/2），把 mermaid 恢复成按图表类型的懒加载，3.99 MB 可拆成首屏只取 flowchart 所需的几百 KB
+- CSS 349 KB 仍全量内联（上游未做 CSS 分割）
+- codicon 字体 122 KB、图标数据 143 KB 也可以挪到资源通道，收益较小，暂不动

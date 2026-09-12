@@ -52,6 +52,7 @@ bin/
 node_modules/
 **/node_modules/
 webview/dist/
+webview/dist-mermaid/
 
 src/main/resources/html/*
 
@@ -60,6 +61,8 @@ src/main/resources/html/*
 # 放在根 .gitignore 则不影响上传（上传不读根 ignore），二者兼顾。
 hbuilderx-plugin/ai-bridge/
 hbuilderx-plugin/html/claude-chat.html
+# 资源通道的 chunks 同为构建产物（mermaid 整包、按需语言包），由 webview 构建生成
+hbuilderx-plugin/html/chunks/
 
 .specify
 .claude
