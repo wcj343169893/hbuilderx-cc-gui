@@ -50,15 +50,14 @@ export default function CodexProviderDialog({
       } else {
         // Add mode - reset with default template
         setProviderName('');
-        setConfigTomlJson(`disable_response_storage = true
-model = "gpt-5.1-codex"
+        setConfigTomlJson(`model = "gpt-5.1-codex"
 model_reasoning_effort = "high"
-model_provider = "crs"
+model_provider = "my-relay"
 
-[model_providers.crs]
+[model_providers.my-relay]
+name = "My Relay"
 base_url = "https://api.example.com/v1"
-name = "crs"
-requires_openai_auth = true
+env_key = "OPENAI_API_KEY"
 wire_api = "responses"`);
         setAuthJson(`{
   "OPENAI_API_KEY": ""
@@ -69,17 +68,7 @@ wire_api = "responses"`);
     }
   }, [isOpen, provider]);
 
-  // Format JSON
-  const handleFormatConfigJson = () => {
-    try {
-      const parsed = JSON.parse(configTomlJson);
-      setConfigTomlJson(JSON.stringify(parsed, null, 2));
-      addToast(t('settings.codexProvider.dialog.formatSuccess'), 'success');
-    } catch (e) {
-      addToast(t('settings.codexProvider.dialog.formatError'), 'error');
-    }
-  };
-
+  // Format JSON — auth.json only; the config field holds TOML, which JSON.parse cannot format
   const handleFormatAuthJson = () => {
     try {
       const parsed = JSON.parse(authJson);
@@ -214,21 +203,10 @@ wire_api = "responses"`);
 
           {/* config.toml JSON */}
           <div className="form-group">
-            <div style={FORM_HEADER_STYLE}>
-              <label htmlFor="configTomlJson">
-                config.toml {t('settings.codexProvider.dialog.configJson')}
-                <span className="required">{t('settings.provider.dialog.required')}</span>
-              </label>
-              <button
-                type="button"
-                className="btn btn-secondary btn-sm"
-                onClick={handleFormatConfigJson}
-                style={FORMAT_BUTTON_STYLE}
-              >
-                <span className="codicon codicon-symbol-namespace" />
-                {t('settings.codexProvider.dialog.formatJson')}
-              </button>
-            </div>
+            <label htmlFor="configTomlJson">
+              config.toml {t('settings.codexProvider.dialog.configJson')}
+              <span className="required">{t('settings.provider.dialog.required')}</span>
+            </label>
             <textarea
               id="configTomlJson"
               className="form-input code-input"
