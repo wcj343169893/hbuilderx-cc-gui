@@ -1,0 +1,197 @@
+# 上游（jetbrains-cc-gui）新功能移植方案
+
+- 日期：2026-09-12
+- 上游仓库：https://github.com/zhukunpenglinyutong/jetbrains-cc-gui （本仓库的 fork 源）
+- 目标：把上游 v0.4.6 ~ v0.5.5 期间新增的功能，成体系地移植到 HBuilderX 版（本仓库），并建立**常态化同步机制**，不再出现一次性落后 10+ 个版本的情况。
+
+---
+
+## 一、现状量化
+
+| 项目 | 数据 |
+|---|---|
+| 共同祖先（merge base） | `4a41b9bb`（上游 `Merge PR #1276 / feature/v0.4.5`，2026-06-12） |
+| 上游最新 | v0.5.5（2026-09-01） |
+| 上游自 merge base 起的提交 | **540** 个 |
+| 本仓库自 merge base 起的提交 | **54** 个 |
+| 上游改动文件数 | webview 501 / src(Java) 320 / ai-bridge 140 |
+| 本仓库改动文件数 | hbuilderx-plugin 85 / webview 56 / ai-bridge 9 / src 3 / e2e 13 |
+| **两侧同时改过的文件（冲突候选）** | **54 个**（其中 10 个是 i18n 语言包，1 个是 `version/changelog.ts`） |
+| 前后端契约现存缺口 | **26 个**（`node hbuilderx-plugin/scripts/check-message-contracts.js`，当前退出码 1） |
+| 上游前端事件总数 / 本仓库 | 187 / 160，其中 **49 个上游事件本仓库 webview 尚无** |
+
+### 关键结论
+
+1. **本仓库与上游有共同祖先，可以走真正的 `git merge`**，不需要手工对拷文件。这是本方案的基础。
+2. 两侧同改文件只有 54 个，且本仓库一侧的改动普遍只有几十行（最大的 `version/changelog.ts` 属于「本仓库独占」文件，直接取 ours）。**冲突是可控的，前提是按上游 tag 分批合并，而不是一次性 merge main。**
+3. 真正的工作量不在合并，而在**第三层**：上游新功能的后端是 Java（`src/main/java`），HBuilderX 版必须在 `hbuilderx-plugin/lib/*.js` + `message-router.js` 里重写一份。新增了 147 个 Java 文件，其中约 21 个是 handler/service 级别的新后端。
+
+---
+
+## 二、三层架构与工作量归属
+
+本仓库保留了上游完整目录结构，移植工作按层拆分：
+
+| 层 | 目录 | 上游技术栈 | 移植方式 | 工作量 |
+|---|---|---|---|---|
+| 前端 | `webview/` | React + TS（与 IDE 无关） | **直接 git merge**，只解决 fork 适配点冲突 | 低（冲突解决） |
+| 桥接 | `ai-bridge/` | Node（与 IDE 无关） | **直接 git merge**，新增 channel/service 原样可用 | 低 |
+| IDE 宿主 | 上游 `src/`（Java） → 本仓库 `hbuilderx-plugin/`（JS） | IntelliJ Platform | **必须重写**：每个新 Java handler → JS service + `message-router.js` 的 case | **高（占 80%）** |
+
+`src/`（Java）仍然 merge 进来，但**不投入编译与维护**，只作为两个用途：(1) 重写 HBuilderX 后端时的参考实现；(2) 保持后续 merge 的干净度（不删除可避免每次 merge 都产生 delete/modify 冲突）。
+
+### 前端唯一的「缺了就静默失效」风险点
+
+`webview` 合并进来后，前端会发出后端不认识的事件，走 `default` 分支静默丢弃，表现为「点了没反应 / 一直转圈」。本仓库已有治本工具：
+
+```bash
+node hbuilderx-plugin/scripts/check-message-contracts.js   # 缺口非空则 exit 1
+```
+
+**每个批次的验收门禁都以这个脚本为准**，并在批次结束前把缺口清零（实现 case，或登记进 `INTENTIONALLY_UNHANDLED` 白名单并写明理由）。
+
+---
+
+## 三、总体策略
+
+### 3.1 按上游 tag 逐版本合并（不要一次性 merge main）
+
+```bash
+git remote add upstream https://github.com/zhukunpenglinyutong/jetbrains-cc-gui
+git fetch upstream main
+git fetch upstream 'refs/tags/*:refs/tags/up-*'
+git checkout -b sync/up-v0.4.7     # 每批一个分支
+git merge up-v0.4.7                # 解冲突 → 补后端 → 验收 → 合回 main
+```
+
+理由：540 个提交一次性 merge，冲突会在 54 个文件里叠加成一团，且一旦出问题无法二分定位。逐 tag 合并后，每一批都是「可构建、可自测、可发版」的状态。
+
+### 3.2 每个批次固定四步
+
+1. **merge**：`git merge up-vX.Y`，按第四节的归属规则解冲突；只解冲突，不顺手改业务逻辑。
+2. **补后端**：跑契约校验，对每个新缺口在 `hbuilderx-plugin/lib/` 新增 service + 在 `message-router.js` 补 case；参照对应 Java handler 的行为。
+3. **验收**：
+   - `cd webview && npm run build`（单文件产物必须构建成功，并记录 `html/claude-chat.html` 体积变化）
+   - `node hbuilderx-plugin/scripts/check-message-contracts.js` 缺口为 0
+   - webview 单测 + `e2e/` 无头回归套件通过
+   - HBuilderX 内手工走一遍该批次的新功能主路径
+4. **提交**：一个批次一个 release（版本号 +0.0.1），`changelog.ts` 追加本批次条目（只写实际已生效的功能，没移植的不写）。
+
+### 3.3 批次划分
+
+| 批次 | 上游版本 | 规模（webview/ai-bridge/java 文件） | 主要新功能 | 需新增的 HBuilderX 后端 |
+|---|---|---|---|---|
+| B0 | —（前置） | — | 清理现存 26 个契约缺口；契约校验 + webview 单测接入 `.github/workflows`；补 e2e 基线 | 26 个 case（详见 3.4） |
+| B1 | v0.4.6 | 54/23/38 | 权限模式热切换；**安全加固组**（默认 `default` 模式、PreToolUse 对 Bash/Agent 返回 `ask`、拦截 `NODE_OPTIONS`/`LD_PRELOAD`/`DYLD_*`、"始终允许"收敛到命令级、MCP stdio 元字符拒绝、`npm install --ignore-scripts`、配置文件 0600、危险路径检查扩展到 Bash 串与 `~`、Codex 沙箱默认 `workspace-write`） | `permission-bridge.js` / `permission-safety.js` 对齐；`dependency-service.js` 加 `--ignore-scripts`；配置写入权限 0600 |
+| B2 | v0.4.7 (+fix1/fix2) | 49/14/76 | MCP Marketplace（内置/官方 Registry/GitHub Registry 多源 + 磁盘缓存）；从 Copilot 配置导入 MCP；自定义模型自定义单价；AskUserQuestion 通知开关；消息尾部「详细输出」开关；GPT-5.6 Sol/Terra/Luna（本仓库已自行实现，合并时以上游实现为准） | `mcp-marketplace-service.js`（对应 `McpMarketplaceService` + 4 个 client）、`mcp-service.js` 扩展导入能力、`model-pricing-service.js`；case：`get_mcp_marketplace_sources`、`search_mcp_marketplace`、`parse_copilot_mcp_config`、`set_custom_model_pricing` |
+| B3 | v0.4.8 | 102/27/93 | 异步子代理生命周期跟踪（时长/token/用量，不再卡在 running）；Fable 档位贯通；Codex GPT-5.6 max reasoning 与模型别名 | `history-service.js` 分页：`load_codex_history_page`；子代理状态上报链路 |
+| B4 | v0.4.9 | 220/3/76 | **TokenTracker 用量仪表盘**（替换旧用量统计，移除两个 Aggregator）；MCP Claude/Codex 分页隔离；Codex provider 从 cc-switch 导入 + OpenAI 直连/预设大扩充；KaTeX 数学公式渲染；`/goal`；Codex skill 递归发现；SDK ≥0.3.182 校验；Codex Pet（宠物/petdex/孵化） | **最重的一批**。`tokentracker-gateway.js`（自动探测/安装 `tokentracker-cli`、127.0.0.1 串行起服、白名单代理 `tt_proxy`）；`update_codex_mcp_server`；Codex cc-switch 导入 3 个 case；Codex Pet 16 个 case（**建议本批次先不做，见第六节**） |
+| B5 | v0.5 | 133/36/70 | **多 CLI 引擎第一波：Grok / Kimi / OpenCode / PI**（`ai-bridge` 新增 4 个 channel + 对应 service 目录）；Grok 常驻多轮 ACP daemon；Grok 500k 上下文环；Codex 自定义模型上下文窗口；Codex 从 `config.toml`/catalog 取模型；`@file` 可点击引用；通知声音 + 仅失焦时通知；Commit AI 流式；输入栏主题色 | CLI 探测与模型发现：`cli-status-service.js`（对应 `CliStatusDetector`）、`cli-models-service.js`；case：`get_cli_status`、`get_cli_models`、`set_system_notification_only_when_unfocused`、`set_ask_user_question_sound_notification_enabled`、`surface_damage_applied`、`history_dom_committed`；Commit AI 需确认 HBuilderX 是否有可写入的 git 提交面板（见第六节 spike） |
+| B6 | v0.5.1 | 93/31/45 | PI/OpenCode/Kimi 会话历史读取（含 OpenCode 1.x SQLite）；历史模型/agent 还原 + 多引擎导出；Grok 动态模型发现；**引用选中文本进输入框**（Ctrl/Cmd+Shift+Q）；Prompt Enhancer / Commit AI 扩展到 6 引擎；CLI 图片附件；`/mcp`；模型收藏置顶与厂商分组 | `history-service.js` 接入各引擎 reader；`enhance_prompt` 契约重新对齐（本仓库当前未发该事件） |
+| B7 | v0.5.2 | 35/15/16 | 子代理进程详情展示原始 prompt | `load_subagent_statuses` |
+| B8 | v0.5.3 | 74/53/55 | **DeepSeek Harness (DSH)**：WebSocket 桥、流式文本/思考、工具调用、审批与提问、模型发现、多轮会话、历史管理 | `dsh-service.js`（对应 `DshHostHandler`，管理 daemon 生命周期）；case：`get_dsh_status`、`start_dsh_host`、`stop_dsh_host`、`save_dsh_settings` |
+| B9 | v0.5.4 | 146/36/99 | **OMP (Oh My Pi) provider**；**Claude plan-usage 进度条**（5h/7d 窗口消耗速度配色，z.ai/GLM 走 monitor quota）；DSH agent preset 切换；模型/effort/speed/1M 收进紧凑下拉；Codex Pet 扩展 | `plan-usage-service.js`（对应 `ClaudePlanUsageService`）；`set_dsh_preset`；OMP channel 仅需桥接透传 |
+| B10 | v0.5.5 | 54/12/25 | 变更日志弹窗开源横幅 + Star；CLI provider 可隐藏 + CLI 设置深链；设置页社区区块重做（外链走系统浏览器）；品牌/README 更新为多引擎 | 外链打开走 HBuilderX API；品牌文案保持本仓库自有（不取上游） |
+
+> 规模列是该 tag 相对上一个 tag 的改动文件数，用于排期参考，不等于工作量。
+
+### 3.4 B0 现存 26 个缺口（合并前必须先清）
+
+`clear_input_history`、`create_new_tab`、`delete_input_history_item`、`get_linkify_capabilities`、`get_mode`、`get_node_processes`、`get_selected_agent`、`get_thinking_enabled`、`get_usage_statistics`、`kill_all_orphans`、`kill_node_process`、`open_class`、`read_clipboard`、`record_input_history`、`refresh_file`、`restart_node_daemon`、`rewind_files`、`set_auto_open_file_enabled`、`set_selected_agent`、`set_send_shortcut`、`set_streaming_enabled`、`set_thinking_enabled`、`show_interactive_diff`、`undo_all_file_changes`、`undo_file_changes`、`write_clipboard`
+
+处理原则：能实现的实现；HBuilderX 无对应 API 的（如 `open_class`）在前端隐藏入口**并且**登记白名单，避免留「能点不能用」的按钮。先清零的理由是：基线为 0 时，后续每批次的 `diff` 才能准确反映「这一批引入了哪些新缺口」。
+
+---
+
+## 四、冲突解决规则（按文件归属预先定调）
+
+合并时不要临场判断，按下表执行：
+
+| 文件 / 范围 | 归属 | 规则 |
+|---|---|---|
+| `webview/src/version/changelog.ts` | **本仓库独占** | 取 ours；上游条目不并入（本仓库 changelog 走自己的版本线，`hbuilderx-plugin/changelog.md` 由 bundle 时自动生成） |
+| `README.md` / `README.zh-CN.md` / 品牌文案 / `package.json` 的 id/publisher/version | **本仓库独占** | 取 ours；只手工吸收上游「功能说明」段落 |
+| `webview/src/i18n/locales/*.json`（10 个） | **双向合并** | 取 theirs 为基底，再把本仓库新增的 key 追加回去（本仓库侧改动仅十几行，逐 key 核对） |
+| `webview/src/utils/bridge.ts`、`webview/src/global.d.ts` | **适配层，需人工** | 取 theirs 的新增契约类型，保留本仓库的 HBuilderX 桥接实现；改完必须跑契约校验 |
+| `webview/scripts/copy-dist.mjs` | **本仓库独占** | 取 ours（多了一份 HBuilderX 产物路径） |
+| `ai-bridge/**` 本仓库改过的 9 个文件 | **以上游为基底** | 取 theirs，再把本仓库的修复重新 apply 上去（下面列明） |
+| `src/main/java/**` | **全部取 theirs** | 不编译、不维护，仅作参考实现 |
+| `hbuilderx-plugin/**` | **本仓库独占** | 上游不存在，不会冲突 |
+
+### 必须在合并后重新确认仍然生效的本仓库自有修复
+
+这些是本仓库在共享目录里打的补丁，取 theirs 后容易被冲掉，每批次 merge 后逐条回归：
+
+- `ai-bridge/channels/codex-channel.js` / `services/codex/message-service.js`：Codex 中断真正终止本轮、错误透传 stdout、单次请求 config 覆盖
+- `ai-bridge/services/claude/runtime-lifecycle.js` / `persistent-query-service.js`：中断后再发送看不到回复、后台仍在执行；按进程树清理孙进程防孤儿
+- `ai-bridge/daemon.js`：版本号运行时读取插件 package.json
+- `ai-bridge/utils/permission-mapper.js`：自动模式仍弹授权的修复
+- `webview` 侧：DeepSeek 峰谷守卫/队列面板、整文件左右对比 DiffViewer、上下文百分比点击打开用量弹窗 + Compact、任务/子代理耗时与 token、会话项目名、uni-agent 技能面板
+- 本仓库已自行实现、上游也有的功能（GPT-5.6 模型列表、Codex 订阅配额面板）：**统一改为以上游实现为准**，删除本仓库的重复实现，避免双份代码长期分叉
+
+---
+
+## 五、上游 Java handler → HBuilderX JS 映射表
+
+移植第三层时按此表建文件，一个 Java handler 对应一个 JS service，保持命名可追溯：
+
+| 上游 Java | 新增 `hbuilderx-plugin/lib/` | 批次 |
+|---|---|---|
+| `mcp/marketplace/McpMarketplaceService` + `BuiltIn/Registry/GitHubOrg/Http` 4 个 client + `handler/marketplace/McpMarketplaceHandler` | `mcp-marketplace-service.js` | B2 |
+| `mcp/importer/McpServerImportService` + `handler/importer/McpServerImportHandler` | `mcp-import-service.js` | B2 |
+| `handler/provider/CustomModelPricingHandler` + `settings/ModelPricing` + `provider/pricing/*` | `model-pricing-service.js` | B2 |
+| `handler/TokenTrackerHandler` + 本地网关 | `tokentracker-gateway.js` | B4 |
+| `cli/CliStatusDetector` + `cli/CliToolId` + `handler/CliStatusHandler` | `cli-status-service.js` | B5 |
+| `handler/CliModelsHandler` + `provider/{grok,kimi,opencode,pi,omp}/*ModelsProvider` | `cli-models-service.js` | B5/B9 |
+| `service/commit/CommitAIClient` 等 5 个文件 | `commit-ai-service.js`（依赖 spike 结果） | B5 |
+| `handler/history/CodexExecHistoryReplay`、`CodexSubagentHistoryLoader` + 各引擎 reader | 扩展 `history-service.js` / `codex-history-service.js` | B3/B6 |
+| `provider/dsh/*` + `handler/DshHostHandler` + `handler/DshPresetHandler` | `dsh-service.js` | B8/B9 |
+| `provider/claude/ClaudePlanUsageService` + `handler/provider/claude/ClaudePlanUsageHandler` | `plan-usage-service.js` | B9 |
+| `handler/CodexPetHandler` + `CodexPetFloatingService` | `codex-pet-service.js`（**取舍项**，见第六节） | 待定 |
+| `util/IdeFocusState`、`ui/SurfaceFrameFence`、`OsrImeCaretFix`、`JcefModuleAvailability` | 不移植（IntelliJ/JCEF 专有） | — |
+
+---
+
+## 六、风险、取舍与需要先做的 spike
+
+### 需要你决策的「可能不移植」项
+
+| 功能 | 问题 | 建议 |
+|---|---|---|
+| **Codex Pet（桌面宠物 / petdex / 孵化）** | 上游实现依赖 IntelliJ 浮动窗口（`CodexPetFloatingService`）+ 16 个前端事件；HBuilderX 没有等价的悬浮窗能力 | **建议不移植**：合并代码但在前端隐藏入口，16 个事件登记白名单。收益低、适配成本高 |
+| **TokenTracker 仪表盘** | 体量最大（v0.4.9 动了 220 个 webview 文件，含 vendored dashboard + i18n + 品牌资源），且需要本地 HTTP 网关：探测/安装 `tokentracker-cli`、起 127.0.0.1 服务、白名单代理 `tt_proxy`。同时上游**删除了**旧用量统计后端 | 两个选项：① 完整移植（成本最高的一项，但旧用量统计被上游删掉后不移植会留空洞）；② 移植网关+仪表盘但推迟到 B5 之后，B4 先保留本仓库现有用量统计 |
+| **Commit AI 流式写入提交面板** | 上游走 Git4Idea 读 diff + 写 IDEA 提交面板；HBuilderX 的源码管理 API 能力未知 | 先做 spike；不行就降级为「生成后复制到剪贴板」 |
+| **系统通知 / IDE 焦点检测 / 声音提醒** | 依赖 `IdeFocusState` 等平台能力 | spike HBuilderX 通知 API；无焦点检测则该开关置灰 |
+
+### 体积风险（硬约束）
+
+`webview` 构建产物是**单文件 HTML**（`webview/scripts/copy-dist.mjs` 把 `dist/index.html` 同时拷给 IDEA 与 HBuilderX）。B4 的 TokenTracker dashboard、KaTeX，以及 B5/B6 的多引擎 UI 都会显著增大这个文件。**每批次验收必须记录产物体积**，一旦 HBuilderX webview 加载明显变慢，就要改造构建（拆分外部资源 / 按需加载 dashboard），这项改造不要等到出问题才做评估。
+
+### 进程与资源风险
+
+新增 6 个 CLI 引擎各自带常驻进程（Grok ACP daemon、DSH WebSocket daemon、OMP、PI…）。本仓库已踩过「中断后孙进程成孤儿」的坑，新引擎要**复用现有的进程树清理与 daemon 自愈逻辑**，不要各写一套；`kill_all_orphans` / `kill_node_process`（B0 缺口里就有）要一并覆盖新引擎。
+
+---
+
+## 七、常态化同步机制（一次性补完之后）
+
+1. 保留 `upstream` remote，每次上游发版后在 `sync/up-vX.Y` 分支走一遍四步流程，单版本差距下冲突基本是零星的。
+2. `.github/workflows` 增加门禁：契约校验 + webview 单测 + webview build（产物体积输出到日志）。
+3. 在 `CONTRIBUTING.md` 写明共享目录（`webview/`、`ai-bridge/`）的改动规范：**优先在上游修，再同步下来**；必须本地改的，集中到可识别的适配点，别散落在业务组件里，降低后续 merge 成本。
+
+---
+
+## 八、建议执行顺序
+
+```
+B0（清缺口 + CI 门禁）
+ → B1（安全加固，风险最高收益最明确，优先）
+ → B2 → B3
+ → B4（先定 TokenTracker / Codex Pet 取舍再动手）
+ → B5 → B6（多引擎，体量大但后端模式统一，可连做）
+ → B7 → B8 → B9 → B10
+```
+
+B1 之所以排在第一批功能批次：它修的是默认放行工具、恶意仓库 `.claude/settings.json` 自动放行 Bash、`npm install` 安装钩子 RCE、环境变量注入这类安全问题，和功能移植进度无关，越早越好。
+
+每批次结束即可发一个 HBuilderX 版本，用户侧能持续看到进展，也便于问题定位到具体批次。
