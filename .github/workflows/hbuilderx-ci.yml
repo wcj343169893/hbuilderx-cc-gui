@@ -62,8 +62,9 @@ jobs:
       - name: Message contract check (frontend/backend event parity)
         run: node hbuilderx-plugin/scripts/check-message-contracts.js
 
-      - name: hbuilderx-plugin lib unit tests
-        run: node --test hbuilderx-plugin/lib/*.test.js
+      - name: hbuilderx-plugin lib + scripts unit tests
+        # scripts 下是契约门禁自身的测试：门禁判错会连累后面每一个移植批次，所以它也要被测。
+        run: node --test hbuilderx-plugin/lib/*.test.js hbuilderx-plugin/scripts/*.test.js
 
       - name: Upload webview build (for e2e job)
         uses: actions/upload-artifact@v7
