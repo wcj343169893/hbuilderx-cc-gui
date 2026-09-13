@@ -1,5 +1,6 @@
 import { useRef } from 'react';
 import type { ClaudeMessage } from '../types';
+import { isToolResultOnlyUserMessage } from '../utils/turnScope';
 
 /** A single block inside `raw.message.content`. */
 interface ContentBlock {
@@ -274,12 +275,20 @@ export function useStreamingMessages(): UseStreamingMessagesReturn {
   const getOrCreateStreamingAssistantIndex = (list: ClaudeMessage[]): number => {
     const currentIdx = streamingMessageIndexRef.current;
     if (currentIdx >= 0 && currentIdx < list.length && list[currentIdx]?.type === 'assistant') {
-      // Check that there is no user message after the streaming assistant.
+      // Check that there is no *real* user message after the streaming assistant.
       // When the user sends a new message during an active stream, the new
       // user message is appended after the assistant, and we must NOT continue
       // streaming into the old (now-stale) assistant. Instead, create a fresh
       // placeholder at the end for the new turn's response.
-      const hasUserMessageAfter = list.slice(currentIdx + 1).some((msg) => msg?.type === 'user');
+      // A tool_result is also modeled as type:'user' (it's the SDK's "user" role
+      // reply carrying the tool output), and it normally follows the very
+      // assistant message whose tool_use it answers — within the SAME turn.
+      // Counting it here would misfire on every tool call mid-stream, spawning
+      // a duplicate ghost assistant bubble that re-copies the accumulated text
+      // (see resume-replay e2e regression). Exclude tool_result-only entries.
+      const hasUserMessageAfter = list
+        .slice(currentIdx + 1)
+        .some((msg) => msg?.type === 'user' && !isToolResultOnlyUserMessage(msg));
       if (hasUserMessageAfter) {
         // Stale index: a user message was sent after this assistant.
         // The old assistant is now part of the previous (completed) turn.

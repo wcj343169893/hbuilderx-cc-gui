@@ -1,9 +1,10 @@
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { ModelSelect } from './ModelSelect';
 import { CLAUDE_MODELS, CODEX_MODELS } from '../types';
 import type { ModelInfo } from '../types';
 import { STORAGE_KEYS } from '../../../types/provider';
+import { writeClaudeModelMapping } from '../../../utils/claudeModelMapping';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -39,10 +40,11 @@ describe('ModelSelect', () => {
 
     expect(screen.getByRole('button').textContent).toContain('glm-4');
 
-    localStorage.setItem(
-      STORAGE_KEYS.CLAUDE_MODEL_MAPPING,
-      JSON.stringify({ sonnet: 'glm-5' }),
-    );
+    // 用生产写入 API（而不是裸 localStorage.setItem）触发同窗口内的 localStorageChange 事件，
+    // 覆盖真实链路：同窗口写入不会派发原生 storage 事件，ModelSelect 只监听自定义事件刷新。
+    act(() => {
+      writeClaudeModelMapping({ sonnet: 'glm-5' });
+    });
 
     rerender(
       <ModelSelect
