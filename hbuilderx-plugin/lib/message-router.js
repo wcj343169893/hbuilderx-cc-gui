@@ -21,6 +21,7 @@ const dependencyService = require('./dependency-service');
 const { CodexQuotaService, resolveAccessMode: resolveCodexAccessMode } = require('./codex-quota-service');
 const codexRuntime = require('./codex-runtime');
 const webviewAssets = require('./webview-assets');
+const inputHistoryStore = require('./input-history-store');
 
 // ===== @文件补全（list_files）扫描参数 =====
 // 对齐 IDEA 版 FileSystemCollector 的硬编码跳过集 / 上限（含递归深度与单目录子项数）。
@@ -127,6 +128,15 @@ class MessageRouter {
     this.cwd = ''; // getWorkspaceFolders() 是异步的，构造里拿不到，改在 init()/发送前 await 解析
     this.projectName = ''; // 当前会话所属项目名（HBuilderX 可同时打开多个项目，顶部会话名后展示）
     this._busy = false;
+
+    // 移植缺口修复：以下设置此前只有前端 state，从未持久化到宿主（重启后回默认值）。
+    // 持久化方式对齐 model/mode/provider，走同一份 pref.json。
+    this.selectedAgent = (this._prefs.selectedAgent && this._prefs.selectedAgent.id) ? this._prefs.selectedAgent : null;
+    this.alwaysThinkingEnabled = typeof this._prefs.alwaysThinkingEnabled === 'boolean' ? this._prefs.alwaysThinkingEnabled : false;
+    this.streamingEnabled = typeof this._prefs.streamingEnabled === 'boolean' ? this._prefs.streamingEnabled : true;
+    this.sendShortcut = this._prefs.sendShortcut || 'enter';
+    this.autoOpenFileEnabled = typeof this._prefs.autoOpenFileEnabled === 'boolean' ? this._prefs.autoOpenFileEnabled : false;
+    this._lastClipboardReadAt = 0; // read_clipboard 限流用（见 _handleReadClipboard）
 
     // 历史面板当前 provider（前端在 load_history_data/deep_search_history 时下发，后续 load/delete/export 沿用）
     this._historyProvider = 'claude';
@@ -1289,6 +1299,11 @@ class MessageRouter {
         this._persist({ permissionMode: this.permissionMode });
         this.bridge.callJs('onModeChanged', this.permissionMode);
         break;
+      // 移植缺口修复：前端 settingsBootstrap 启动时会 get_mode 兜底轮询（防止与 bootstrap()
+      // 的 onModeReceived 首发竞态错过），此前无 case 静默丢弃。原样回显当前模式即可，幂等。
+      case 'get_mode':
+        this.bridge.callJs('onModeReceived', this.permissionMode);
+        break;
       case 'set_provider':
         this.provider = content || this.provider;
         this._persist({ provider: this.provider });
@@ -1300,6 +1315,116 @@ class MessageRouter {
         break;
       case 'set_codex_fast_mode':
         this.codexFastMode = typeof content === 'string' && content.trim() ? content.trim() : 'normal';
+        break;
+      // ===== 基础设置持久化（移植缺口修复：此前只有前端 state，重启后回默认值）=====
+      case 'get_thinking_enabled':
+        this.bridge.callJs('updateThinkingEnabled', JSON.stringify({ enabled: this.alwaysThinkingEnabled }));
+        break;
+      case 'set_thinking_enabled': {
+        let req = {};
+        try { req = JSON.parse(content || '{}') || {}; } catch (e) { req = {}; }
+        this.alwaysThinkingEnabled = req.enabled === true;
+        this._persist({ alwaysThinkingEnabled: this.alwaysThinkingEnabled });
+        break;
+      }
+      case 'set_streaming_enabled': {
+        let req = {};
+        try { req = JSON.parse(content || '{}') || {}; } catch (e) { req = {}; }
+        this.streamingEnabled = req.streamingEnabled !== false;
+        this._persist({ streamingEnabled: this.streamingEnabled });
+        break;
+      }
+      case 'set_send_shortcut': {
+        let req = {};
+        try { req = JSON.parse(content || '{}') || {}; } catch (e) { req = {}; }
+        this.sendShortcut = (req.sendShortcut === 'cmdEnter') ? 'cmdEnter' : 'enter';
+        this._persist({ sendShortcut: this.sendShortcut });
+        break;
+      }
+      case 'set_auto_open_file_enabled': {
+        let req = {};
+        try { req = JSON.parse(content || '{}') || {}; } catch (e) { req = {}; }
+        this.autoOpenFileEnabled = req.autoOpenFileEnabled === true;
+        this._persist({ autoOpenFileEnabled: this.autoOpenFileEnabled });
+        break;
+      }
+      // ===== 选中的自定义 Agent（移植缺口修复）=====
+      case 'get_selected_agent':
+        this.bridge.callJs('onSelectedAgentReceived',
+          JSON.stringify(this.selectedAgent ? { agent: this.selectedAgent } : { selectedAgentId: null }));
+        break;
+      case 'set_selected_agent': {
+        let agent = null;
+        if (content && content.trim() && content.trim() !== 'null') {
+          try {
+            const data = JSON.parse(content);
+            if (data && data.id) agent = { id: data.id, name: data.name || '', prompt: data.prompt };
+          } catch (e) { /* 非法 JSON 视为取消选中 */ }
+        }
+        this.selectedAgent = agent;
+        this._persist({ selectedAgent: agent });
+        this.bridge.callJs('onSelectedAgentChanged', JSON.stringify({ success: true, agent }));
+        break;
+      }
+      // ===== 输入历史宿主侧镜像（移植缺口修复；真正驱动补全的是前端 localStorage，
+      // 这里只是镜像持久化，fire-and-forget，无需回调前端）=====
+      case 'record_input_history':
+        try { inputHistoryStore.record(this.hx, JSON.parse(content || '[]')); }
+        catch (e) { this.output.appendLine(`[router] record_input_history 失败: ${e && e.message}`); }
+        break;
+      case 'delete_input_history_item':
+        try { inputHistoryStore.deleteItem(this.hx, content || ''); }
+        catch (e) { this.output.appendLine(`[router] delete_input_history_item 失败: ${e && e.message}`); }
+        break;
+      case 'clear_input_history':
+        try { inputHistoryStore.clearAll(this.hx); }
+        catch (e) { this.output.appendLine(`[router] clear_input_history 失败: ${e && e.message}`); }
+        break;
+      // ===== 剪贴板（移植缺口修复）=====
+      case 'read_clipboard':
+        this._handleReadClipboard();
+        break;
+      case 'write_clipboard':
+        this._handleWriteClipboard(content);
+        break;
+      // ===== Node 进程管理面板（移植缺口修复）=====
+      case 'get_node_processes':
+        this._handleGetNodeProcesses();
+        break;
+      case 'kill_node_process':
+        this._handleKillNodeProcess(content);
+        break;
+      case 'kill_all_orphans':
+        this._handleKillAllOrphans();
+        break;
+      case 'restart_node_daemon':
+        this._handleRestartNodeDaemon(content);
+        break;
+      // ===== Markdown 内类导航能力位（移植缺口修复）=====
+      // HBuilderX 是 HTML/JS/uni-app IDE，没有 Java PSI，类导航能力恒为 false；
+      // 前端据此隐藏 @ClassName 跳转入口（见 webview/src/utils/linkify.ts），
+      // open_class 因而在正常使用中不会被触发到，登记进契约校验白名单（见该脚本注释）。
+      case 'get_linkify_capabilities':
+        this.bridge.callJs('updateLinkifyCapabilities', JSON.stringify({ classNavigationEnabled: false }));
+        break;
+      // ===== 用量统计面板（移植缺口修复：MVP，避免弹窗永久 loading）=====
+      // 完整的历史用量/费用聚合仪表盘是移植方案 B4（TokenTracker）的范围，此处先如实
+      // 回填当前能拿到的数据（会话数/项目信息），费用与逐日/逐模型聚合先留空，不编造数字。
+      case 'get_usage_statistics':
+        this._handleGetUsageStatistics(content);
+        break;
+      // ===== 文件回退 / 撤销（移植缺口修复）=====
+      case 'refresh_file':
+        this._handleRefreshFile(content);
+        break;
+      case 'undo_file_changes':
+        this._handleUndoFileChanges(content);
+        break;
+      case 'undo_all_file_changes':
+        this._handleUndoAllFileChanges(content);
+        break;
+      case 'rewind_files':
+        this._handleRewindFiles(content);
         break;
       case 'permission_decision':
         this.permission.handlePermissionDecision(content);
@@ -1584,6 +1709,11 @@ class MessageRouter {
       // （见 lib/diff-editor-provider.js）。前端 openDiffViewer 统一发此事件。
       case 'open_diff_editor':
         this._handleOpenDiffEditor(content);
+        break;
+      // 移植缺口修复：交互式 diff（编辑区 tab 里带「应用/拒绝」按钮），复用同一套
+      // .ccdiff 机制，多一个 interactive 标志位，见 _handleShowInteractiveDiff。
+      case 'show_interactive_diff':
+        this._handleShowInteractiveDiff(content);
         break;
       // ===== 上下文用量弹窗（移植缺口修复：此前无 case → 弹窗永久 loading）=====
       case 'get_context_usage':
@@ -2884,6 +3014,86 @@ class MessageRouter {
   }
 
   /**
+   * 差异相关操作出错时的统一提示。
+   * 顺手修复：此方法此前被 _handleOpenDiffEditor 多处调用却从未定义过——异常路径一旦触发
+   * （非法 JSON / openTextDocument 不可用或失败 / 写临时文件失败）会因 `this._notifyDiff is
+   * not a function` 而抛出新的 TypeError，把原始错误信息吞掉。发现于实现 show_interactive_diff
+   * 时（同一批 diff 相关改动，顺手补上）。
+   */
+  _notifyDiff(kind, message) {
+    const msg = String(message == null ? '' : message);
+    this.output.appendLine(`[diff] ${kind}: ${msg}`);
+    try { this.bridge.callJs('addErrorMessage', msg); } catch (e) { /* 通知不可用则忽略 */ }
+  }
+
+  /**
+   * show_interactive_diff：带「应用/拒绝」按钮的交互式 diff（移植缺口修复）。
+   * 复用 open_diff_editor 的 .ccdiff 自定义编辑器机制（见 lib/diff-editor-provider.js 顶部
+   * 注释），多一个 interactive:true 标志位驱动 provider 渲染按钮。对齐 Java
+   * InteractiveDiffMessageHandler：非新建文件先读磁盘当前内容作为 before；新建文件 before 为空。
+   * Apply 落盘 + Apply/Reject 结果回传前端（handleDiffResult）都在 diff-editor-provider.js 里
+   * 完成（见 notifyInteractiveDiffResult），本方法只负责准备数据 + 打开编辑器。
+   */
+  _handleShowInteractiveDiff(content) {
+    let req = {};
+    try { req = JSON.parse(content || '{}') || {}; } catch (e) { req = {}; }
+    const filePath = req.filePath || '';
+    const newFileContents = typeof req.newFileContents === 'string' ? req.newFileContents : '';
+    const isNewFile = req.isNewFile === true;
+
+    const fail = (error) => this.notifyInteractiveDiffResult({ filePath, action: 'REJECT', error });
+
+    if (!filePath) { fail('文件路径为空'); return; }
+    const abs = this._resolveAbsPath(filePath);
+    if (!abs) { fail('无法解析文件路径'); return; }
+    if (!this._isPathWithinCwd(abs)) { fail('文件路径不在项目目录内'); return; }
+
+    let beforeContent = '';
+    if (!isNewFile) {
+      if (!fs.existsSync(abs)) { fail('文件不存在'); return; }
+      try { beforeContent = fs.readFileSync(abs, 'utf-8'); }
+      catch (e) { fail('读取文件失败：' + ((e && e.message) || e)); return; }
+    }
+
+    const tabName = req.tabName || path.basename(abs);
+    const data = {
+      title: tabName,
+      filePath: abs,
+      interactive: true,
+      isNewFile,
+      sections: [{ label: '', before: beforeContent, after: newFileContents }],
+    };
+
+    try {
+      const tmpDir = path.join(os.tmpdir(), 'cc-gui-diff');
+      fs.mkdirSync(tmpDir, { recursive: true });
+      const ext = path.extname(abs);
+      const rawBase = path.basename(abs, ext) || 'diff';
+      const safeBase = (rawBase + ext).replace(/[^\w.\-]+/g, '_') || 'diff';
+      // 与只读预览（open_diff_editor）分开命名，避免同名文件互相覆盖内容。
+      const f = path.join(tmpDir, safeBase + '.interactive.ccdiff');
+      fs.writeFileSync(f, JSON.stringify(data), 'utf-8');
+
+      const ws = this.hx && this.hx.workspace;
+      if (!ws || typeof ws.openTextDocument !== 'function') {
+        fail('当前 HBuilderX 不支持 openTextDocument，无法打开差异');
+        return;
+      }
+      this.output.appendLine(`[interactive-diff] 写入并打开: ${f}`);
+      Promise.resolve(ws.openTextDocument(f))
+        .then(() => this.output.appendLine(`[interactive-diff] 已打开编辑区 diff: ${f}`))
+        .catch((e) => fail('打开差异失败：' + ((e && e.message) || e)));
+    } catch (e) {
+      fail('生成差异失败：' + ((e && e.message) || e));
+    }
+  }
+
+  /** 交互式 diff（show_interactive_diff）Apply/Reject 结果回传前端，由 diff-editor-provider.js 调用。 */
+  notifyInteractiveDiffResult(payload) {
+    try { this.bridge.callJs('handleDiffResult', JSON.stringify(payload)); } catch (e) { /* ignore */ }
+  }
+
+  /**
    * 由片段改动重建整文件左右对比：读磁盘当前内容为「后」全文，反向套用各处 edit 复原「前」全文。
    * fragments = [{ before:oldString, after:newString }, ...]（顺序即改动应用顺序）。
    * 返回 { label:'', before, after } 或 null（无 filePath/读不到盘/无有效改动/未匹配到改动时返回 null，
@@ -3001,6 +3211,321 @@ class MessageRouter {
       }
     }
     return out;
+  }
+
+  /** 校验绝对路径落在当前项目根目录内，对齐 Java WslPathUtil.isPathWithinDirectory（防越权改写宿主机任意文件）。 */
+  _isPathWithinCwd(absPath) {
+    if (!this.cwd || !absPath) return false;
+    const rel = path.relative(this.cwd, absPath);
+    return !!rel && rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel);
+  }
+
+  /**
+   * refresh_file：Claude 在编辑区外部改了文件后通知宿主"文件变了"（移植缺口修复）。
+   * HBuilderX 未见文档化的"重新从磁盘加载已打开文档"API（不同于 IDEA 的 VirtualFile.refresh），
+   * 贸然 openTextDocument 会抢焦点、语义也不对，故先只做存在性校验 + 日志，不再静默丢弃事件；
+   * 若后续证实 hx.workspace 有等价能力，在此处补上真正的重新加载。
+   */
+  _handleRefreshFile(content) {
+    let req = {};
+    try { req = JSON.parse(content || '{}') || {}; } catch (e) { req = {}; }
+    const filePath = req.filePath || '';
+    if (!filePath) return;
+    const abs = this._resolveAbsPath(filePath);
+    if (!abs || !fs.existsSync(abs)) {
+      this.output.appendLine(`[router] refresh_file: 文件不存在 ${filePath}`);
+      return;
+    }
+    this.output.appendLine(`[router] refresh_file: ${abs}`);
+  }
+
+  /**
+   * 撤销单个文件的改动（移植缺口修复）。算法对齐 Java UndoFileHandler：
+   * status='A'（新增文件）→ 删除；status='M'（修改）→ operations 倒序把 newString 换回
+   * oldString（后做的编辑先撤销，顺序反了会错位，同 _buildFullFileSection 的手法）。
+   * 直接读写磁盘（HBuilderX 无 IDE Document/VFS 概念可用），成功后不强行抢占编辑器焦点。
+   * @returns {{success:boolean, filePath:string, error?:string}}
+   */
+  _undoOneFile(filePath, status, operations) {
+    const abs = this._resolveAbsPath(filePath || '');
+    if (!abs) return { success: false, filePath, error: '无法解析文件路径' };
+    if (!this._isPathWithinCwd(abs)) return { success: false, filePath, error: '文件路径不在项目目录内' };
+
+    try {
+      if (status === 'A') {
+        if (fs.existsSync(abs)) fs.unlinkSync(abs);
+        return { success: true, filePath };
+      }
+      if (status === 'M') {
+        if (!Array.isArray(operations) || operations.length === 0) {
+          return { success: false, filePath, error: '没有可撤销的编辑操作' };
+        }
+        if (!fs.existsSync(abs)) return { success: false, filePath, error: '文件不存在' };
+        const current = fs.readFileSync(abs, 'utf-8');
+        const reversed = operations.slice().reverse().map((op) => ({
+          oldString: (op && op.newString) || '',
+          newString: (op && op.oldString) || '',
+          replaceAll: !!(op && op.replaceAll),
+        }));
+        fs.writeFileSync(abs, this._applyEdits(current, reversed), 'utf-8');
+        return { success: true, filePath };
+      }
+      return { success: false, filePath, error: `未知的文件状态: ${status}` };
+    } catch (e) {
+      return { success: false, filePath, error: (e && e.message) || String(e) };
+    }
+  }
+
+  _handleUndoFileChanges(content) {
+    let req = {};
+    try { req = JSON.parse(content || '{}') || {}; } catch (e) { req = {}; }
+    const filePath = req.filePath || '';
+    if (!filePath) {
+      this.bridge.callJs('onUndoFileResult', JSON.stringify({ success: false, filePath: '', error: '缺少文件路径' }));
+      return;
+    }
+    this.bridge.callJs('onUndoFileResult', JSON.stringify(this._undoOneFile(filePath, req.status, req.operations)));
+  }
+
+  _handleUndoAllFileChanges(content) {
+    let req = {};
+    try { req = JSON.parse(content || '{}') || {}; } catch (e) { req = {}; }
+    const files = Array.isArray(req.files) ? req.files : [];
+    if (!files.length) {
+      this.bridge.callJs('onUndoAllFileResult', JSON.stringify({ success: false, error: '没有需要撤销的文件' }));
+      return;
+    }
+    let successCount = 0;
+    const errors = [];
+    for (const f of files) {
+      const filePath = f && f.filePath;
+      if (!filePath) { errors.push('缺少文件路径'); continue; }
+      const result = this._undoOneFile(filePath, f && f.status, f && f.operations);
+      if (result.success) successCount++;
+      else errors.push(`${filePath}: ${result.error}`);
+    }
+    if (successCount > 0) {
+      this.bridge.callJs('onUndoAllFileResult', JSON.stringify({ success: true, count: successCount }));
+    } else {
+      this.bridge.callJs('onUndoAllFileResult', JSON.stringify({ success: false, error: errors.join('; ') || '撤销失败' }));
+    }
+  }
+
+  /**
+   * rewind_files：把文件恢复到某条历史用户消息发出前的状态（移植缺口修复）。
+   * 真正的文件回滚发生在 Claude Agent SDK 内部（query().rewindFiles()，依赖
+   * enableFileCheckpointing 文件检查点能力，见 ai-bridge/services/claude/message-rewind.js，
+   * 该文件随 ai-bridge 整体合并、已是完整实现）；本方法只负责转发请求 + 回传结果。
+   * daemon 以一行 JSON `{success,...}` 经 onLine 回调抵达（对齐 _handleGetContextUsage 的手法：
+   * message-rewind.js 中途还有大量 [REWIND] 调试字符串行，用"是否以 { 开头且能 JSON.parse"过滤）。
+   */
+  async _handleRewindFiles(content) {
+    let req = {};
+    try { req = JSON.parse(content || '{}') || {}; } catch (e) { req = {}; }
+    const sessionId = req.sessionId ? String(req.sessionId) : (this.sessionId || '');
+    const userMessageId = req.userMessageId ? String(req.userMessageId) : '';
+    const respond = (payload) => { try { this.bridge.callJs('onRewindResult', JSON.stringify(payload)); } catch (e) { /* ignore */ } };
+
+    if (!sessionId || !userMessageId) {
+      respond({ success: false, error: '缺少 sessionId 或 userMessageId' });
+      return;
+    }
+    if (!this.aiBridge || !this.aiBridge.proc) {
+      respond({ success: false, error: 'Claude 服务未就绪，请先发送一条消息' });
+      return;
+    }
+
+    try {
+      await this._ensureCwd();
+      const params = { sessionId, userMessageId, cwd: this.cwd || '' };
+      let result = null;
+      const done = await this.aiBridge.request('claude.rewindFiles', params, (line) => {
+        if (typeof line !== 'string') return;
+        const s = line.trim();
+        if (s.charAt(0) !== '{') return;
+        let obj;
+        try { obj = JSON.parse(s); } catch (e) { return; }
+        if (!obj || typeof obj !== 'object' || typeof obj.success !== 'boolean') return;
+        result = obj;
+      });
+      if (!result) {
+        respond({ success: false, error: (done && done.error) || 'rewind 调用未返回结果' });
+        return;
+      }
+      respond(result);
+    } catch (e) {
+      this.output.appendLine(`[router] rewind_files 异常: ${e && e.message}`);
+      respond({ success: false, error: `回退文件失败：${e && e.message}` });
+    }
+  }
+
+  /** 剪贴板读取限流窗口（毫秒），对齐 Java ClipboardHandler：太频繁的读请求直接回空，防滥用探测。 */
+  static get CLIPBOARD_READ_MIN_INTERVAL_MS() { return 200; }
+
+  _handleReadClipboard() {
+    const now = Date.now();
+    if (this._lastClipboardReadAt && (now - this._lastClipboardReadAt) < MessageRouter.CLIPBOARD_READ_MIN_INTERVAL_MS) {
+      this.bridge.callJs('onClipboardRead', '');
+      return;
+    }
+    this._lastClipboardReadAt = now;
+    try {
+      const clipboard = this.hx && this.hx.env && this.hx.env.clipboard;
+      if (!clipboard || typeof clipboard.readText !== 'function') {
+        this.bridge.callJs('onClipboardRead', '');
+        return;
+      }
+      Promise.resolve(clipboard.readText())
+        .then((text) => this.bridge.callJs('onClipboardRead', typeof text === 'string' ? text : ''))
+        .catch(() => this.bridge.callJs('onClipboardRead', ''));
+    } catch (e) {
+      this.bridge.callJs('onClipboardRead', '');
+    }
+  }
+
+  _handleWriteClipboard(content) {
+    const MAX_CLIPBOARD_WRITE_SIZE = 10 * 1024 * 1024; // 对齐 Java ClipboardHandler
+    const text = typeof content === 'string' ? content : '';
+    if (text.length > MAX_CLIPBOARD_WRITE_SIZE) {
+      this.output.appendLine(`[router] write_clipboard 拒绝：内容过大 (${text.length} chars)`);
+      return;
+    }
+    try {
+      const clipboard = this.hx && this.hx.env && this.hx.env.clipboard;
+      if (!clipboard || typeof clipboard.writeText !== 'function') return;
+      Promise.resolve(clipboard.writeText(text)).catch((e) => {
+        this.output.appendLine(`[router] write_clipboard 失败: ${e && e.message}`);
+      });
+    } catch (e) { /* ignore */ }
+  }
+
+  /**
+   * Node 进程管理面板（移植缺口修复）：MVP，只报宿主实际管理的这一个 ai-bridge daemon 子进程
+   * （kind:'DAEMON'）。Java 版有 NodeProcessRegistry 跨 CLI 引擎/跨 channel 的完整登记表，
+   * HBuilderX 单 daemon 架构下没有这份注册表数据，不编造 CHANNEL/ORPHAN 记录。
+   */
+  _handleGetNodeProcesses() {
+    const snapshot = (this.aiBridge && typeof this.aiBridge.getProcessSnapshot === 'function')
+      ? this.aiBridge.getProcessSnapshot() : null;
+    const processes = snapshot ? [snapshot] : [];
+    const totals = {
+      daemon: processes.filter((p) => p.kind === 'DAEMON').length,
+      channel: processes.filter((p) => p.kind === 'CHANNEL').length,
+      orphan: processes.filter((p) => p.orphan).length,
+      all: processes.length,
+    };
+    this.bridge.callJs('updateNodeProcesses', JSON.stringify({ snapshotAt: Date.now(), totals, processes }));
+  }
+
+  _handleKillNodeProcess(content) {
+    let req = {};
+    try { req = JSON.parse(content || '{}') || {}; } catch (e) { req = {}; }
+    const pid = Number(req.pid);
+    if (!this.aiBridge || !Number.isInteger(pid)) {
+      this.bridge.callJs('nodeProcessKillResult', JSON.stringify({ pid: req.pid, id: req.id, success: false, error: '进程不可用' }));
+      return;
+    }
+    const result = this.aiBridge.killByPid(pid);
+    this.bridge.callJs('nodeProcessKillResult', JSON.stringify({ pid, id: req.id, success: result.success, error: result.error }));
+    // kill 是异步生效的，稍等一下再刷新快照，让面板反映最新存活状态（对齐 Java 的刷新延迟）。
+    setTimeout(() => this._handleGetNodeProcesses(), 200);
+  }
+
+  _handleKillAllOrphans() {
+    // MVP：本宿主没有孤儿进程登记表（见 _handleGetNodeProcesses 的说明），如实回 killed:0，不编造数字。
+    this.bridge.callJs('nodeProcessKillResult', JSON.stringify({ success: true, killed: 0 }));
+    this._handleGetNodeProcesses();
+  }
+
+  _handleRestartNodeDaemon(content) {
+    let req = {};
+    try { req = JSON.parse(content || '{}') || {}; } catch (e) { req = {}; }
+    const pid = Number(req.pid);
+    if (!this.aiBridge || !Number.isInteger(pid)) {
+      this.bridge.callJs('nodeProcessKillResult', JSON.stringify({ pid: req.pid, success: false, error: 'daemon 不可用' }));
+      return;
+    }
+    const result = this.aiBridge.killByPid(pid);
+    // kill 后 aiBridge.proc 置空；下一次请求会按自愈逻辑自动重新拉起（见 ai-bridge-client.js start()）。
+    this.bridge.callJs('nodeProcessKillResult', JSON.stringify({ pid, success: result.success, error: result.error, restart: true }));
+    setTimeout(() => this._handleGetNodeProcesses(), 500);
+  }
+
+  /**
+   * 用量统计面板（移植缺口修复，MVP）：如实回填当前项目的会话数与逐会话 usage（当前近似口径，
+   * 见 claude-session.js._handleUsage 的同款说明），避免弹窗永久卡「正在加载」。
+   * 费用（estimatedCost/cost）与逐模型聚合（byModel）需要模型单价表，是移植方案 B4（TokenTracker，
+   * 见 docs/plans/2026-09-12-upstream-sync-port-plan.md）的范围，这里如实置 0，不编造数字。
+   * 逐会话 usage 需要读整份 JSONL，为控制一次性 I/O 量只对最近 MAX_SESSIONS_FOR_USAGE 个会话计算。
+   */
+  _handleGetUsageStatistics(content) {
+    const emptyTotals = () => ({ inputTokens: 0, outputTokens: 0, cacheWriteTokens: 0, cacheReadTokens: 0, totalTokens: 0 });
+    const emptyWeekly = () => ({
+      currentWeek: { sessions: 0, cost: 0, tokens: 0 },
+      lastWeek: { sessions: 0, cost: 0, tokens: 0 },
+      trends: { sessions: 0, cost: 0, tokens: 0 },
+    });
+    const respond = (data) => this.bridge.callJs('updateUsageStatistics', JSON.stringify(data));
+    const cwd = this.cwd || '';
+
+    try {
+      const list = historyService.loadHistoryData(cwd, 'claude');
+      const sessions = Array.isArray(list.sessions) ? list.sessions : [];
+      const MAX_SESSIONS_FOR_USAGE = 50;
+      const totals = emptyTotals();
+      const dailyMap = new Map();
+      const sessionSummaries = [];
+
+      for (const s of sessions.slice(0, MAX_SESSIONS_FOR_USAGE)) {
+        let raw = null;
+        try { raw = historyService.findLastUsageFromRawMessages(cwd, s.sessionId); } catch (e) { raw = null; }
+        const u = {
+          inputTokens: (raw && raw.input_tokens) || 0,
+          outputTokens: (raw && raw.output_tokens) || 0,
+          cacheWriteTokens: (raw && raw.cache_creation_input_tokens) || 0,
+          cacheReadTokens: (raw && raw.cache_read_input_tokens) || 0,
+          totalTokens: 0,
+        };
+        u.totalTokens = u.inputTokens + u.outputTokens + u.cacheWriteTokens + u.cacheReadTokens;
+        totals.inputTokens += u.inputTokens;
+        totals.outputTokens += u.outputTokens;
+        totals.cacheWriteTokens += u.cacheWriteTokens;
+        totals.cacheReadTokens += u.cacheReadTokens;
+        totals.totalTokens += u.totalTokens;
+
+        const ts = s.lastTimestamp || s.firstTimestamp || Date.now();
+        const date = new Date(ts).toISOString().slice(0, 10);
+        if (!dailyMap.has(date)) dailyMap.set(date, { date, sessions: 0, usage: emptyTotals(), cost: 0, modelsUsed: [] });
+        const day = dailyMap.get(date);
+        day.sessions += 1;
+        day.usage.inputTokens += u.inputTokens;
+        day.usage.outputTokens += u.outputTokens;
+        day.usage.cacheWriteTokens += u.cacheWriteTokens;
+        day.usage.cacheReadTokens += u.cacheReadTokens;
+        day.usage.totalTokens += u.totalTokens;
+
+        sessionSummaries.push({ sessionId: s.sessionId, timestamp: ts, model: '', usage: u, cost: 0, summary: s.title || '' });
+      }
+
+      respond({
+        projectPath: cwd,
+        projectName: this.projectName || (cwd ? path.basename(cwd) : ''),
+        totalSessions: list.sessionCount || sessions.length,
+        totalUsage: totals,
+        estimatedCost: 0,
+        sessions: sessionSummaries,
+        dailyUsage: Array.from(dailyMap.values()).sort((a, b) => (a.date < b.date ? 1 : -1)),
+        weeklyComparison: emptyWeekly(),
+        byModel: [],
+        lastUpdated: Date.now(),
+      });
+    } catch (e) {
+      this.output.appendLine(`[router] get_usage_statistics 异常: ${e && e.message}`);
+      respond({
+        projectPath: cwd, projectName: this.projectName || '', totalSessions: 0, totalUsage: emptyTotals(),
+        estimatedCost: 0, sessions: [], dailyUsage: [], weeklyComparison: emptyWeekly(), byModel: [], lastUpdated: Date.now(),
+      });
+    }
   }
 
   /**

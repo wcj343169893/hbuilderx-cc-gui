@@ -9,7 +9,13 @@ export interface ChatHeaderProps {
   t: TFunction;
   onBack: () => void;
   onNewSession: () => void;
-  onNewTab: () => void;
+  /**
+   * Opens a new chat tab (IntelliJ ToolWindow multi-tab feature). Only rendered
+   * when provided — HBuilderX's webview host is single-instance and has no
+   * equivalent, so App.tsx does not pass this prop there (see message-router.js
+   * INTENTIONALLY_UNHANDLED entry for 'create_new_tab').
+   */
+  onNewTab?: () => void;
   onHistory: () => void;
   onSettings: () => void;
   /**
@@ -186,13 +192,15 @@ export function ChatHeader({
             <button className="icon-button" onClick={onNewSession} data-tooltip={t('common.newSession')}>
               <span className="codicon codicon-plus" />
             </button>
-            <button
-              className="icon-button"
-              onClick={onNewTab}
-              data-tooltip={t('common.newTab')}
-            >
-              <span className="codicon codicon-split-horizontal" />
-            </button>
+            {onNewTab && (
+              <button
+                className="icon-button"
+                onClick={onNewTab}
+                data-tooltip={t('common.newTab')}
+              >
+                <span className="codicon codicon-split-horizontal" />
+              </button>
+            )}
             <button
               className="icon-button"
               onClick={onHistory}

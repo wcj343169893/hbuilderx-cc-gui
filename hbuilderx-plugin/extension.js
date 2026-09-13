@@ -193,7 +193,15 @@ function activate(context) {
   // 编辑器区建 WebViewPanel tab → 回调 resolveCustomEditor 渲染左右分栏 diff。
   // 触发方式对齐官方示例：workspace.openTextDocument（见 message-router 的 _handleOpenDiffEditor）。
   try {
-    hx.window.registerCustomEditorProvider('ccgui.diffEditor', new CcDiffEditorProvider(output));
+    // 交互式 diff（show_interactive_diff）Apply/Reject 结果要回传聊天 webview（handleDiffResult），
+    // 但两者是独立的 webview 面板；用 () => router 取活的单例（而非直接传 router 值），
+    // 避免插件重启/router 重建后这里的引用停留在旧实例上。
+    const notifyInteractiveDiffResult = (payload) => {
+      if (router && typeof router.notifyInteractiveDiffResult === 'function') {
+        router.notifyInteractiveDiffResult(payload);
+      }
+    };
+    hx.window.registerCustomEditorProvider('ccgui.diffEditor', new CcDiffEditorProvider(output, notifyInteractiveDiffResult));
     output.appendLine('[ccgui] 已注册编辑区 diff 自定义编辑器 provider');
   } catch (e) {
     output.appendLine(`[ccgui] 注册 diff provider 失败: ${e && e.message}`);

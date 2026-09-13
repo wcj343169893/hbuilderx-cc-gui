@@ -100,11 +100,33 @@ git merge up-v0.4.7                # 解冲突 → 补后端 → 验收 → 合�
 
 > 规模列是该 tag 相对上一个 tag 的改动文件数，用于排期参考，不等于工作量。
 
-### 3.4 B0 现存 26 个缺口（合并前必须先清）
+### 3.4 B0 现存 26 个缺口（合并前必须先清）—— **已清零（2026-09-13）**
 
 `clear_input_history`、`create_new_tab`、`delete_input_history_item`、`get_linkify_capabilities`、`get_mode`、`get_node_processes`、`get_selected_agent`、`get_thinking_enabled`、`get_usage_statistics`、`kill_all_orphans`、`kill_node_process`、`open_class`、`read_clipboard`、`record_input_history`、`refresh_file`、`restart_node_daemon`、`rewind_files`、`set_auto_open_file_enabled`、`set_selected_agent`、`set_send_shortcut`、`set_streaming_enabled`、`set_thinking_enabled`、`show_interactive_diff`、`undo_all_file_changes`、`undo_file_changes`、`write_clipboard`
 
 处理原则：能实现的实现；HBuilderX 无对应 API 的（如 `open_class`）在前端隐藏入口**并且**登记白名单，避免留「能点不能用」的按钮。先清零的理由是：基线为 0 时，后续每批次的 `diff` 才能准确反映「这一批引入了哪些新缺口」。
+
+**处理结果**（`node hbuilderx-plugin/scripts/check-message-contracts.js` 现已 0 缺口 exit 0）：
+
+- **真正实现（22 个）**：设置类（`get_mode`/`get_thinking_enabled`/`set_thinking_enabled`/`set_streaming_enabled`/
+  `set_send_shortcut`/`set_auto_open_file_enabled`/`get_selected_agent`/`set_selected_agent`，持久化走 `pref.json`）；
+  输入历史镜像（`record_input_history`/`delete_input_history_item`/`clear_input_history`，新增
+  `hbuilderx-plugin/lib/input-history-store.js`）；剪贴板（`read_clipboard`/`write_clipboard`，走
+  `hx.env.clipboard`）；Node 进程面板（`get_node_processes`/`kill_node_process`/`kill_all_orphans`/
+  `restart_node_daemon`，MVP：只管理宿主自身这一个 ai-bridge daemon 子进程，无 Java 版跨引擎注册表，
+  不编造 CHANNEL/ORPHAN 数据）；文件操作（`refresh_file` 存在性校验+日志；`undo_file_changes`/
+  `undo_all_file_changes` 按 Java UndoFileHandler 算法用 `fs` 直接读写；`rewind_files` 转发到
+  daemon `claude.rewindFiles`，真正的文件回滚在 Claude Agent SDK 的文件检查点能力里，ai-bridge 侧
+  已是完整实现，只补了 HBuilderX host 转发这一层）；`show_interactive_diff`（复用 `open_diff_editor`
+  的 `.ccdiff` 自定义编辑器机制，加 `interactive:true` 渲染「应用/拒绝」按钮，见
+  `hbuilderx-plugin/lib/diff-editor-provider.js`；顺手修复了该文件里潜伏的 `_notifyDiff` 未定义
+  bug）；`get_linkify_capabilities`（如实回 `classNavigationEnabled:false`）；`get_usage_statistics`
+  MVP（真实会话数 + 逐会话 token 用量，费用/逐模型聚合留给 B4 TokenTracker，不编造数字）。
+- **隐藏入口 + 登记白名单（2 个）**：`create_new_tab`（HBuilderX 单例 webview 无 IntelliJ 多 tab
+  概念，`ChatHeader.tsx` 的新建 tab 按钮改为按 `onNewTab` 是否传入条件渲染，`App.tsx` 不再传）；
+  `open_class`（HBuilderX 非 Java IDE 无 PSI，`classNavigationEnabled` 恒为 false 已使前端自动隐藏
+  入口，见 `webview/src/utils/linkify.ts`）。均登记进
+  `hbuilderx-plugin/scripts/check-message-contracts.js` 的 `INTENTIONALLY_UNHANDLED` 白名单。
 
 ---
 

@@ -11,9 +11,17 @@
  * 触发方式：hx.workspace.openTextDocument('xxx.ccdiff')（.ccdiff 内容为 JSON）。
  *
  * 数据流：resolveCustomEditor 直接从 .ccdiff 文件读 JSON 并内联进 HTML 渲染（非 postMessage 灌数据）。
+ *
+ * 交互式 diff（data.interactive === true，对应前端 show_interactive_diff / message-router.js
+ * _handleShowInteractiveDiff）额外渲染「应用/拒绝」按钮：点击经 webview.postMessage 回传
+ * {command:'apply'|'reject', filePath}，apply 时本文件直接落盘写文件（无需绕回 message-router），
+ * 再经构造函数注入的 onInteractiveResult 回调通知聊天 webview（跨 webview 面板，见 extension.js
+ * 里 router 单例的传法），驱动 StatusPanel 的已处理文件列表更新（对齐 Java InteractiveDiffMessageHandler
+ * 的 handleDiffResult 语义：APPLY/REJECT/DISMISS）。
  */
 
 const fs = require('fs');
+const path = require('path');
 const hx = require('hbuilderx');
 
 const CustomDocument = hx.CustomEditor.CustomDocument;
@@ -109,8 +117,16 @@ function buildDiffEditorHtml(data, theme) {
     + '.cell.fold:hover .foldbar{color:var(--diff-text);}'
     + '.foldbar{padding:2px 8px;color:var(--diff-muted-text);font-size:11px;'
     + 'font-family:var(--ui);white-space:nowrap;}'
+    + '.hd .actions{display:flex;align-items:center;gap:8px;flex:0 0 auto;}'
+    + '.hd .btn{cursor:pointer;border:1px solid var(--diff-gutter-border);border-radius:4px;'
+    + 'padding:4px 12px;font-size:12px;font-family:var(--ui);background:var(--btn-bg);color:var(--diff-text);}'
+    + '.hd .btn.apply{border-color:var(--diff-added-accent);color:var(--diff-added-accent);}'
+    + '.hd .btn.apply:hover{background:var(--diff-added-bg);}'
+    + '.hd .btn.reject{border-color:var(--diff-deleted-accent);color:var(--diff-deleted-accent);}'
+    + '.hd .btn.reject:hover{background:var(--diff-deleted-bg);}'
     + '</style></head><body>'
     + '<div class="hd"><span class="t" id="title"></span>'
+    + '<span class="actions" id="actions"></span>'
     + '<button class="c" id="close" title="关闭">✕</button></div>'
     + '<div class="body" id="body"></div>'
     + '<script>const DATA=' + json + ';' + DIFF_RENDER_JS + '</script>'
@@ -206,12 +222,40 @@ const DIFF_RENDER_JS = [
   'else secs.forEach(function(s){renderSection(body,s);});',
   'var cb=document.getElementById("close");',
   'if(cb)cb.addEventListener("click",function(){try{hbuilderx.postMessage({command:"close"});}catch(e){}});',
+  // 交互式 diff（show_interactive_diff）：渲染「应用/拒绝」按钮，点击回传 postMessage。
+  // apply 时把 DATA.sections 最后一段的 after（整文件新内容）一并带回，供宿主落盘写文件——
+  // 宿主侧不重新计算 diff，直接信它，保证「所见即所得」。
+  'if(DATA.interactive){',
+  ' var actions=document.getElementById("actions");',
+  ' var lastSec=secs.length?secs[secs.length-1]:null;',
+  ' var applyBtn=document.createElement("button");applyBtn.className="btn apply";applyBtn.textContent="应用";',
+  ' var rejectBtn=document.createElement("button");rejectBtn.className="btn reject";rejectBtn.textContent="拒绝";',
+  ' applyBtn.addEventListener("click",function(){try{hbuilderx.postMessage({command:"apply",filePath:DATA.filePath,'
+    + 'newContent:lastSec?lastSec.after:""});}catch(e){}});',
+  ' rejectBtn.addEventListener("click",function(){try{hbuilderx.postMessage({command:"reject",filePath:DATA.filePath});}catch(e){}});',
+  ' actions.appendChild(applyBtn);actions.appendChild(rejectBtn);',
+  '}',
 ].join('');
 
 class CcDiffEditorProvider extends CustomEditorProvider {
-  constructor(output) {
+  /**
+   * @param {{appendLine:(s:string)=>void}} [output]
+   * @param {(payload:{filePath:string, action:'APPLY'|'REJECT'|'DISMISS', error?:string}) => void} [onInteractiveResult]
+   *   交互式 diff（show_interactive_diff）Apply/Reject 后通知聊天 webview（跨面板，见 extension.js）。
+   *   非交互式（open_diff_editor）打开的 diff 不会触发它。
+   */
+  constructor(output, onInteractiveResult) {
     super();
     this.output = output || { appendLine() {} };
+    this.onInteractiveResult = typeof onInteractiveResult === 'function' ? onInteractiveResult : null;
+  }
+
+  /** 交互式 diff 落盘写文件（apply）。filePath 已是 message-router.js 解析好的绝对路径。 */
+  _writeInteractiveFile(filePath, newContent) {
+    if (!filePath || typeof filePath !== 'string') throw new Error('缺少目标文件路径');
+    const abs = toFsPath(filePath);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, newContent == null ? '' : String(newContent), 'utf-8');
   }
 
   openCustomDocument(uri) {
@@ -246,7 +290,27 @@ class CcDiffEditorProvider extends CustomEditorProvider {
 
     try {
       webViewPanel.webView.onDidReceiveMessage((msg) => {
-        if (msg && msg.command === 'close') {
+        if (!msg) return;
+        if (msg.command === 'close') {
+          try { webViewPanel.dispose(); } catch (e) { /* ignore */ }
+          return;
+        }
+        if (!data.interactive) return; // apply/reject 只在交互式 diff 下有意义
+        if (msg.command === 'apply') {
+          const filePath = msg.filePath || data.filePath || '';
+          try {
+            this._writeInteractiveFile(filePath, msg.newContent);
+            this.output.appendLine('[diff-editor] 交互式 diff 已应用: ' + filePath);
+            if (this.onInteractiveResult) this.onInteractiveResult({ filePath, action: 'APPLY' });
+          } catch (e) {
+            const errMsg = (e && e.message) || String(e);
+            this.output.appendLine('[diff-editor] 交互式 diff 应用失败: ' + errMsg);
+            if (this.onInteractiveResult) this.onInteractiveResult({ filePath, action: 'APPLY', error: errMsg });
+          }
+          try { webViewPanel.dispose(); } catch (e) { /* ignore */ }
+        } else if (msg.command === 'reject') {
+          const filePath = msg.filePath || data.filePath || '';
+          if (this.onInteractiveResult) this.onInteractiveResult({ filePath, action: 'REJECT' });
           try { webViewPanel.dispose(); } catch (e) { /* ignore */ }
         }
       });

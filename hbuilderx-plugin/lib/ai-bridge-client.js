@@ -48,6 +48,7 @@ class AiBridgeClient {
     this._readyResolve = null;
     this._readyPromise = null;
     this._disposed = false; // dispose 后拒绝再自动拉起（路由器已弃用本客户端）
+    this._startedAt = 0; // daemon 子进程 spawn 时刻（毫秒时间戳），供「Node 进程管理」面板算运行时长
   }
 
   /** 启动 daemon，等待 ready 事件。 */
@@ -65,6 +66,7 @@ class AiBridgeClient {
       env: { ...process.env, ...this.extraEnv },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
+    this._startedAt = Date.now();
 
     this._readyPromise = new Promise((resolve, reject) => {
       this._readyResolve = resolve;
@@ -191,6 +193,49 @@ class AiBridgeClient {
   abort() {
     if (this.proc) {
       try { this.proc.stdin.write(JSON.stringify({ method: 'abort' }) + '\n'); } catch (e) { /* ignore */ }
+    }
+  }
+
+  /**
+   * 当前 daemon 子进程的快照（供「Node 进程管理」面板展示）。
+   * MVP：本客户端只管理这**一个**常驻 daemon 子进程，没有 Java 版 NodeProcessRegistry 那样
+   * 跨 CLI 引擎/跨 channel 的进程注册表，所以只报这一条 kind:'DAEMON' 记录，不产出
+   * CHANNEL/ORPHAN 记录——没有可靠的注册表数据支撑，宁可不报也不编造。
+   * @returns {{id:string, kind:'DAEMON', pid:number, alive:boolean, startedAt:number, uptimeMs:number}|null}
+   */
+  getProcessSnapshot() {
+    if (!this.proc || typeof this.proc.pid !== 'number') return null;
+    const startedAt = this._startedAt || Date.now();
+    return {
+      id: 'ai-bridge-daemon',
+      kind: 'DAEMON',
+      pid: this.proc.pid,
+      alive: this.proc.exitCode == null && this.proc.signalCode == null,
+      startedAt,
+      uptimeMs: Math.max(0, Date.now() - startedAt),
+      activeRequestCount: this._pending.size,
+      orphan: false,
+    };
+  }
+
+  /**
+   * 按 pid 终止进程（仅当 pid 与当前 daemon 一致时生效；否则视为「找不到该进程」）。
+   * 终止后清空 this.proc——下一次 request() 会按自愈逻辑自动重新拉起 daemon。
+   * @param {number} pid
+   * @returns {{success:boolean, error?:string}}
+   */
+  killByPid(pid) {
+    if (!this.proc || typeof this.proc.pid !== 'number') {
+      return { success: false, error: 'daemon 未运行' };
+    }
+    if (this.proc.pid !== pid) {
+      return { success: false, error: `未找到 pid=${pid} 的进程（当前 daemon pid=${this.proc.pid}）` };
+    }
+    try {
+      this.proc.kill();
+      return { success: true };
+    } catch (e) {
+      return { success: false, error: (e && e.message) || String(e) };
     }
   }
 

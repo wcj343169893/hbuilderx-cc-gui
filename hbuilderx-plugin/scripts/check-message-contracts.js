@@ -29,6 +29,14 @@ const INTENTIONALLY_UNHANDLED = new Set([
   'tab_status_changed',   // HBuilderX 单会话，tab 状态无需后端
   'tab_loading_changed',
   'tab_created',
+  // HBuilderX 插件宿主为单例 webview，无 IntelliJ ToolWindow 多 tab 概念；前端"新建 tab"
+  // 按钮已改为按 onNewTab 是否传入条件渲染（App.tsx 不传，见 ChatHeader.tsx），
+  // 正常使用中不会触发到，此事件名只是仍留在源码里（sendBridgeEvent 调用点本身未删）。
+  'create_new_tab',
+  // HBuilderX 是 HTML/JS/uni-app IDE，无 Java PSI，类导航能力恒为 false
+  // （见 message-router.js 'get_linkify_capabilities' case）；前端据此在
+  // webview/src/utils/linkify.ts 隐藏 @ClassName 跳转入口，正常使用中不会触发到。
+  'open_class',
 ]);
 
 function walk(dir, acc) {
