@@ -83,6 +83,30 @@ const CODEX_CLI_LOGIN_PROVIDER_ID = '__codex_cli_login__';
  * 事件路由：把 webview 出站事件映射到 ai-bridge 调用，并把流式结果回灌前端。
  * 移植自 src/.../handler/core/MessageDispatcher + 各 handler + SessionLifecycleManager 的 MVP 子集。
  */
+/**
+ * 从 sidechain JSONL 记录推断子代理是否已终态（对齐 Java SubagentHistoryService.hasCompleted）。
+ *
+ * 为什么需要它：task_notification 是内存事件、不落盘。会话重新打开后，宿主没有任何终态事件
+ * 可发，只能从子代理自己的 JSONL 反推——否则卡片会永远停在 running。
+ *
+ * 判据：**从尾往前找到的第一条 assistant 记录**的 message.stop_reason。
+ *  - 'tool_use'        → 还在等工具结果，未完成
+ *  - null / 字段缺失   → 流式还没收尾，未完成
+ *  - 其余（end_turn / max_tokens / refusal / stop_sequence / pause_turn）→ 已完成
+ * 注意是「第一条就返回」，不是「有任意一条终态就算完」——中间轮次本来就会有 end_turn。
+ */
+function hasSubagentCompleted(records) {
+  if (!Array.isArray(records)) return false;
+  for (let i = records.length - 1; i >= 0; i--) {
+    const r = records[i];
+    if (!r || typeof r !== 'object') continue;
+    if (r.type !== 'assistant' || !r.message || typeof r.message !== 'object') continue;
+    const stopReason = typeof r.message.stop_reason === 'string' ? r.message.stop_reason : null;
+    return stopReason !== null && stopReason !== 'tool_use';
+  }
+  return false;
+}
+
 class MessageRouter {
   /**
    * @param {object} hx require('hbuilderx')
@@ -207,17 +231,30 @@ class MessageRouter {
    * 故这里取 provider env 里的具体模型（优先 ANTHROPIC_MODEL，否则 sonnet/opus/haiku 映射），
    * 使 DeepSeek 等第三方端点收到它认识的模型 id（如 deepseek-v4-pro[1m]）。
    */
+  /**
+   * 解析「当前选中的模型实际会被路由到哪个模型名」，用于按正确的上下文窗口算用量百分比。
+   *
+   * 优先级在 B3（上游 v0.4.8）被**反转**了，这一点很容易写反：
+   *   旧：ANTHROPIC_MODEL → SONNET → OPUS → HAIKU（固定顺序，先看通用映射）
+   *   新：先看**当前所选家族**的 ANTHROPIC_DEFAULT_<FAMILY>_MODEL，再回落 ANTHROPIC_MODEL
+   * 理由：一个过时的通用 ANTHROPIC_MODEL 会把用户明确选的 Haiku 悄悄路由到别的家族，
+   * 用量百分比与计费都跟着错。家族映射比通用映射更贴近用户意图，所以它优先。
+   *
+   * 家族从当前 this.model 的 id 判断（fable / opus / haiku / sonnet），判不出来就只用通用映射。
+   * 上游 v0.4.8 同时把 fable 纳入了这套路由（Fable 档位贯通），此前本方法完全没覆盖它。
+   */
   _activeProviderModel() {
     const p = this._activeProvider();
     const env = (p && p.settingsConfig && p.settingsConfig.env) || {};
-    if (typeof env !== 'object') return '';
-    return String(
-      env.ANTHROPIC_MODEL
-      || env.ANTHROPIC_DEFAULT_SONNET_MODEL
-      || env.ANTHROPIC_DEFAULT_OPUS_MODEL
-      || env.ANTHROPIC_DEFAULT_HAIKU_MODEL
-      || ''
-    );
+    if (!env || typeof env !== 'object') return '';
+    const id = String(this.model || '').toLowerCase();
+    const family = id.includes('fable') ? 'FABLE'
+      : id.includes('opus') ? 'OPUS'
+      : id.includes('haiku') ? 'HAIKU'
+      : id.includes('sonnet') ? 'SONNET'
+      : null;
+    const familyModel = family ? env['ANTHROPIC_DEFAULT_' + family + '_MODEL'] : '';
+    return String(familyModel || env.ANTHROPIC_MODEL || '');
   }
 
   /**
@@ -844,6 +881,7 @@ class MessageRouter {
     if (!this.nodeInfo || !this.nodeInfo.path) return;
     try { if (this.aiBridge) this.aiBridge.dispose(); } catch (e) { /* ignore */ }
     this.aiBridge = new AiBridgeClient(this.nodeInfo.path, this.output, undefined, this._bridgeExtraEnv());
+    this.aiBridge.onDaemonEvent((obj) => this._handleDaemonEvent(obj));
     try {
       await this.aiBridge.start();
     } catch (err) {
@@ -1306,6 +1344,7 @@ class MessageRouter {
 
     // 权限桥接 env + 自定义 Claude CLI 路径必须在 spawn 前注入；provider 的 key/baseURL 走 ~/.codemoss/config.json（setupApiKey 每次发送读取）
     this.aiBridge = new AiBridgeClient(this.nodeInfo.path, this.output, undefined, this._bridgeExtraEnv());
+    this.aiBridge.onDaemonEvent((obj) => this._handleDaemonEvent(obj));
     // 启动时同步一次 provider 配置到 ~/.codemoss/config.json
     this._syncCodemossConfig();
     try {
@@ -1561,6 +1600,10 @@ class MessageRouter {
         break;
       // ===== B2（上游 v0.4.7）：MCP Marketplace / Copilot 导入 / 自定义单价 =====
       // 数据源清单是硬编码的，无 I/O，同步回即可。前端另有一个伪源 'all'，只存在于 UI。
+      // B3（上游 v0.4.8）：Codex 历史按「人类轮次」分页，「加载更早」按钮走这条。
+      case 'load_codex_history_page':
+        this._handleLoadCodexHistoryPage(content);
+        break;
       case 'get_mcp_marketplace_sources':
         this.bridge.callJs('updateMcpMarketplaceSources', JSON.stringify(mcpMarketplace.getSources()));
         break;
@@ -2017,10 +2060,10 @@ class MessageRouter {
     }
     if (stalled.length > 0) {
       this.output.appendLine(`[router] 僵死任务检测: ${stalled.length} 个任务超过 ${this._TASK_STALL_TIMEOUT_MS}ms: ${stalled.map((s) => `${s.id}(${s.elapsedMs}ms)`).join(', ')}`);
-      // 通知前端显示健康状态
-      try {
-        this.bridge.callJs('taskHealthUpdate', JSON.stringify(stalled.map((s) => ({ id: s.id, status: 'stalled', elapsedMs: s.elapsedMs }))));
-      } catch (e) { /* ignore */ }
+      // 注意：这里原先还会 callJs('taskHealthUpdate', ...)，但前端从未注册过该回调——
+      // 宿主以为通知过了，界面上什么也不会发生（B0d 的入站契约校验查出的那 1 处空转）。
+      // 上游 v0.4.8 起僵死判定已改由前端本地算（TaskExecutionBlock 的 STALL_THRESHOLD_MS），
+      // 宿主这一侧没有消费方，故只保留日志用于诊断。
       // 对僵死的任务发送中断，释放 busy
       if (this._busy && stalled.length > 0) {
         this.output.appendLine('[router] 检测到僵死任务，发送中断以释放 busy');
@@ -2306,9 +2349,12 @@ class MessageRouter {
           this.bridge.callJs('addErrorMessage', `加载 Codex 会话失败：未在 ~/.codex/sessions 中找到会话 ${sessionId}`);
           return;
         }
-        this._replayHistoryMessages(codexLoaded.messages);
+        // 首屏只加载最近一页（对齐上游 v0.4.8）。这里必须走分页，不能只补
+        // load_codex_history_page 那个 case —— 「加载更早」按钮的显隐完全取决于
+        // completeCodexHistoryPage 写入的 __codexHistoryPageInfo.hasMore，
+        // 首屏不发这个回调，按钮就永远不出现（静默降级，不报错，最难查）。
+        this._emitCodexHistoryPage(sessionId, null, 'replace');
         this.bridge.callJs('historyLoadComplete');
-        this.output.appendLine(`[router] load_session: codex ${this.sessionId} 重放 ${codexLoaded.messages.length} 条历史消息`);
         return;
       }
 
@@ -2331,6 +2377,96 @@ class MessageRouter {
       this.bridge.callJs('historyLoadComplete');
       this.bridge.callJs('addErrorMessage', `加载会话失败: ${e && e.message ? e.message : String(e)}`);
     }
+  }
+
+  /**
+   * load_codex_history_page：把更早的一页历史拼到列表头部。
+   *
+   * 入参 `{ sessionId, beforeTurn }`。校验后走 _emitCodexHistoryPage 的 prepend 模式。
+   */
+  _handleLoadCodexHistoryPage(content) {
+    let req = {};
+    try { req = JSON.parse(content || '{}') || {}; } catch (e) { req = {}; }
+    const sessionId = typeof req.sessionId === 'string' ? req.sessionId.trim() : '';
+    const beforeTurn = Number(req.beforeTurn);
+    if (!sessionId || sessionId.length > 200 || !Number.isFinite(beforeTurn) || beforeTurn < 0) {
+      this.bridge.callJs('codexHistoryPageError', JSON.stringify({
+        sessionId, beforeTurn: req.beforeTurn, message: 'Invalid Codex history page cursor',
+      }));
+      return;
+    }
+    this._emitCodexHistoryPage(sessionId, Math.floor(beforeTurn), 'prepend');
+  }
+
+  /**
+   * 读取一页 Codex 历史并按 begin → batch* → complete 三段下发。
+   *
+   * 分代守卫（_codexPageGeneration）：读盘是异步的，用户可能在读的过程中切走会话。旧请求的
+   * 结果如果照样下发，会把别的会话的历史拼进当前列表。每次开始新的一页就自增，回调前比对。
+   *
+   * @param {string} sessionId
+   * @param {number|null} beforeTurn null = 最近一页
+   * @param {'replace'|'prepend'} mode
+   */
+  _emitCodexHistoryPage(sessionId, beforeTurn, mode) {
+    const generation = (this._codexPageGeneration = (this._codexPageGeneration || 0) + 1);
+    let page;
+    try {
+      page = historyService.loadCodexSessionPage(sessionId, beforeTurn);
+    } catch (e) {
+      this.bridge.callJs('codexHistoryPageError', JSON.stringify({
+        sessionId, beforeTurn, message: e && e.message ? e.message : String(e),
+      }));
+      return;
+    }
+    if (generation !== this._codexPageGeneration) return; // 期间切了会话，丢弃
+    if (!page.found) {
+      this.bridge.callJs('codexHistoryPageError', JSON.stringify({
+        sessionId, beforeTurn, message: `未在 ~/.codex/sessions 中找到会话 ${sessionId}`,
+      }));
+      return;
+    }
+    // 磁盘上的会话比前端记的短（被删改过）→ 退化为整体替换，否则会拼出错乱的列表
+    const effectiveMode = page.cursorReset ? 'replace' : mode;
+
+    const pageId = `${sessionId}:${page.fromTurn}-${page.toTurn}:${generation}`;
+    this.bridge.callJs('beginCodexHistoryPage', JSON.stringify({
+      pageId, sessionId, mode: effectiveMode,
+    }));
+
+    if (effectiveMode === 'replace') {
+      this.assembler.reset();
+      this.assembler.loadHistoryMessages(page.messages);
+    } else {
+      this.assembler.prependHistoryMessages(page.messages);
+    }
+
+    // 分批下发：单次 postMessage 太大时前端解析会明显卡顿。这里只按条数分批——
+    // 上游那套 180000 字符上限与 chunk 拼接是为 JCEF 的 executeJavaScript 字符串拼接设的，
+    // HBuilderX 走 postMessage 结构化克隆，没有那个字符串长度问题。
+    const BATCH = 50;
+    for (let i = 0; i < page.messages.length; i += BATCH) {
+      if (generation !== this._codexPageGeneration) return;
+      this.bridge.callJs('appendCodexHistoryPageBatch', pageId, JSON.stringify(page.messages.slice(i, i + BATCH)));
+    }
+
+    this.bridge.callJs('completeCodexHistoryPage', JSON.stringify({
+      pageId,
+      sessionId,
+      mode: effectiveMode,
+      fromTurn: page.fromTurn,
+      toTurn: page.toTurn,
+      totalTurns: page.totalTurns,
+      hasMore: page.fromTurn > 0,
+      loadedMessageCount: page.messages.length,
+      cursorReset: page.cursorReset,
+    }));
+    if (effectiveMode === 'prepend') this.bridge.callJs('codexHistoryPageRenderComplete');
+
+    this.output.appendLine(
+      `[router] codex 历史分页 ${sessionId} 轮次[${page.fromTurn},${page.toTurn}) / 共 ${page.totalTurns}，` +
+      `${page.messages.length} 条，mode=${effectiveMode}${page.cursorReset ? '（光标失效已重置）' : ''}`
+    );
   }
 
   /** 把历史消息注入装配器并逐条 addHistoryMessage 重放到前端（Claude / Codex 共用）。 */
@@ -2540,6 +2676,31 @@ class MessageRouter {
    *   ~/.claude/projects/<sanitized cwd>/<sessionId>/subagents/agent-<agentId>.jsonl
    * 未找到/出错也回 success:false，前端可重试，不卡。
    */
+  /**
+   * daemon 轮间事件。异步子代理生命周期（B3 / 上游 v0.4.8）的**轮间**路径。
+   *
+   * 背景：带 run_in_background 的 Agent/Task，主流只拿到一条「已启动」的 tool_result，
+   * 真正的完成信号是 SDK 的 system/task_notification，而它常常在本轮 result **之后**才到。
+   * 那时 executeTurn 已经 break、turnSink 被清空，daemon 只能用原始 stdout 行把它送出来。
+   * 轮内路径见 claude-session._handleSystem —— 两条都要有（上游称之为 defense-in-depth）。
+   *
+   * sessionId 校验是必须的：daemon 可能同时服务过多个会话，把别的会话的任务事件推给当前
+   * 前端会造成串台（对齐 Java ClaudeChatWindow 的 task_event 分支）。
+   */
+  _handleDaemonEvent(obj) {
+    if (!obj || obj.event !== 'task_event') return; // session_updated 等留待后续批次
+    if (!obj.sessionId) {
+      this.output.appendLine('[router] task_event 缺少 sessionId，已丢弃');
+      return;
+    }
+    if (obj.sessionId !== this.sessionId) {
+      this.output.appendLine(`[router] task_event 会话不匹配（${obj.sessionId} != ${this.sessionId}），已丢弃`);
+      return;
+    }
+    if (!obj.taskEvent) return;
+    this.bridge.callJs('onTaskEvent', JSON.stringify(obj.taskEvent));
+  }
+
   async _handleLoadSubagentSession(content) {
     let req = {};
     try { req = JSON.parse(content) || {}; } catch (e) { req = {}; }
@@ -2566,6 +2727,10 @@ class MessageRouter {
       } else {
         response.success = true;
         response.messages = raws;
+        // 重载/事件丢失时的兜底判据（对齐 Java SubagentHistoryService.hasCompleted）：
+        // task_notification 不落盘，所以重新打开会话后只能靠 sidechain JSONL 推断终态。
+        // 语义要点：**从尾往前找第一条 assistant 就返回**，不是「有任意一条终态就算完」。
+        response.completed = hasSubagentCompleted(raws);
       }
     } catch (e) {
       response.success = false;
@@ -2864,10 +3029,16 @@ class MessageRouter {
       threadId: threadId || '',
       cwd: cwd || '',
       permissionMode: payload.permissionMode || this.permissionMode,
-      model: codexRuntime.resolveCodexModel(payload.model || this.model),
+      // 别名解析（B3）：UI 里选的可能是 [model_aliases] 里的别名，发给 CLI 的必须是真实模型名。
+      // 受管供应商传 configOverrides（只查供应商自带的表，不读用户 ~/.codex），其余传 null 走读盘。
+      model: codexRuntime.resolveModelAlias(
+        codexRuntime.resolveCodexModel(payload.model || this.model),
+        creds.configOverrides || null
+      ),
       baseUrl: '',
       apiKey: creds.apiKey,
-      // codex-channel 负责把 'max' 映射为 codex 的 'xhigh'
+      // 原样透传，宿主不做任何降级。上游 v0.4.8 之前 codex-channel 会把 'max' 降成 'xhigh'，
+      // 现已移除——GPT-5.6 支持真正的 max 档，多降一次就是把该功能悄悄关掉（B3）。
       reasoningEffort: payload.reasoningEffort || this.reasoningEffort || 'medium',
       serviceTier: codexRuntime.resolveServiceTier(payload.codexFastMode || this.codexFastMode),
       attachments: images.entries,
@@ -4844,4 +5015,4 @@ class MessageRouter {
   }
 }
 
-module.exports = { MessageRouter };
+module.exports = { MessageRouter, hasSubagentCompleted };

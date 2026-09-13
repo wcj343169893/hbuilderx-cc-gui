@@ -537,6 +537,61 @@ function resolveCodexModel(model) {
   return m;
 }
 
+/**
+ * 解析 Codex 的 `[model_aliases]`（B3 / 上游 v0.4.8）。
+ *
+ * 用户可以在 config.toml 里给模型起别名，UI 上选的是别名、真正要发给 CLI 的是别名指向的真实
+ * 模型名。上游 `CodexSettingsManager.resolveModelAlias` 无条件读 `~/.codex/config.toml`。
+ *
+ * **本仓库必须分两种情况**，混在一起会出错：
+ *  - 受管供应商（access === 'managed'）：本移植刻意不碰用户的 ~/.codex，配置来自供应商自带的
+ *    configToml（已解析成 configOverrides）。此时若去读用户本地 config.toml，会把受管供应商的
+ *    模型名替换成用户本地的别名——发到一个完全不相干的端点上。所以只查 configOverrides。
+ *  - 其余（local / cli_login）：用的就是用户自己的 ~/.codex，按上游读盘。
+ *
+ * 任何一步失败（文件不存在、TOML 解析失败、值不是非空字符串）都原样返回，不抛。
+ *
+ * @param {string} model UI 选中的模型 id
+ * @param {object|null} configOverrides 受管供应商解析出的配置；非受管时传 null
+ * @param {{ readUserConfig?: () => string }} [deps] 便于测试注入
+ * @returns {string} 解析后的真实模型名；无别名时原样返回
+ */
+function resolveModelAlias(model, configOverrides, deps) {
+  const m = typeof model === 'string' ? model.trim() : '';
+  if (!m) return model;
+  try {
+    let aliases = null;
+    if (configOverrides && typeof configOverrides === 'object') {
+      // 受管供应商：只认供应商自己的表
+      aliases = configOverrides.model_aliases;
+    } else {
+      const read = (deps && deps.readUserConfig) || readUserCodexConfigText;
+      const text = read();
+      if (!text) return m;
+      aliases = parseToml(text).model_aliases;
+    }
+    if (!aliases || typeof aliases !== 'object' || Array.isArray(aliases)) return m;
+    const target = aliases[m];
+    return typeof target === 'string' && target.trim() ? target.trim() : m;
+  } catch (e) {
+    // 用户的 config.toml 写坏了不该让发送失败——退回原模型名
+    return m;
+  }
+}
+
+/** 读用户 ~/.codex/config.toml 原文（不存在/读不了返回空串）。CODEX_HOME 优先。 */
+function readUserCodexConfigText() {
+  const fs = require('fs');
+  const path = require('path');
+  const os = require('os');
+  const home = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+  try {
+    return fs.readFileSync(path.join(home, 'config.toml'), 'utf-8');
+  } catch (e) {
+    return '';
+  }
+}
+
 module.exports = {
   CODEX_ACCESS_NOT_AUTHORIZED_MESSAGE,
   TomlParseError,
@@ -550,4 +605,6 @@ module.exports = {
   resolveServiceTier,
   appendAgentPrompt,
   resolveCodexModel,
+  resolveModelAlias,
+  readUserCodexConfigText,
 };

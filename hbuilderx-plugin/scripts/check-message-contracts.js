@@ -128,10 +128,8 @@ const KNOWN_GAPS = new Map([
  * 与 KNOWN_GAPS 同样的规则：只减不增，过期条目要删。
  */
 const KNOWN_INBOUND_GAPS = new Map([
-  // 宿主在 _checkStalledTasks 里推送停滞任务健康度，前端从未注册该回调 —— 纯空转。
-  // 归 B3（异步子代理生命周期跟踪）：那一批会重做整个任务状态上报链路（onTaskEvent），
-  // 届时要么把它接上，要么连同宿主这一侧的调用一起删掉。
-  ['taskHealthUpdate', 'B3：子代理/任务状态上报链路重做时收口'],
+  // （空）唯一一条 taskHealthUpdate 已在 B3 收口：上游 v0.4.8 起僵死判定改由前端本地算
+  // （TaskExecutionBlock 的 STALL_THRESHOLD_MS），宿主那次 callJs 没有消费方，已删除。
 ]);
 
 // ==================== 扫描 ====================
@@ -156,9 +154,30 @@ function walk(dir, acc) {
   return acc;
 }
 
+/**
+ * 去掉整行注释再扫描。
+ *
+ * 起因：B3 里把一处多余的 `callJs('taskHealthUpdate', ...)` 删掉，但在注释里解释了为什么删，
+ * 注释里照抄的调用形式又被扫描器当成真实调用 —— 门禁报了一个并不存在的缺口。
+ * 解释性注释里出现事件名/回调名是很自然的事，所以这里过滤掉**整行注释**
+ * （`//` 开头、以及块注释内以 `*` 开头的续行）。
+ *
+ * 局限：不处理行尾注释与块注释首行的行内内容 —— 那需要真正的词法分析，收益不抵复杂度。
+ * 真正的调用几乎总是独占语句行，这一层已经能挡掉绝大多数误报。
+ */
+function stripCommentLines(src) {
+  return src
+    .split('\n')
+    .map((line) => {
+      const t = line.trim();
+      return t.startsWith('//') || t.startsWith('*') || t.startsWith('/*') ? '' : line;
+    })
+    .join('\n');
+}
+
 function collect(src, re, group) {
   const out = [];
-  for (const m of src.matchAll(re)) out.push(m[group]);
+  for (const m of stripCommentLines(src).matchAll(re)) out.push(m[group]);
   return out;
 }
 
@@ -280,6 +299,6 @@ function main() {
   else console.log('\n契约门禁通过：无新增缺口。');
 }
 
-module.exports = { judge, scan, EVENT_RE, CASE_RE, CALLJS_RE, CALLBACK_RES, INTENTIONALLY_UNHANDLED, KNOWN_GAPS, KNOWN_INBOUND_GAPS };
+module.exports = { judge, scan, stripCommentLines, EVENT_RE, CASE_RE, CALLJS_RE, CALLBACK_RES, INTENTIONALLY_UNHANDLED, KNOWN_GAPS, KNOWN_INBOUND_GAPS };
 
 if (require.main === module) main();

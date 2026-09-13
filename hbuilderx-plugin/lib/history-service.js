@@ -840,6 +840,7 @@ module.exports = {
   deleteCodexSession,
   deleteCodexSessions,
   loadCodexSessionMessages: codexHistory.loadSessionMessages,
+  loadCodexSessionPage: codexHistory.loadSessionPage,
   exportCodexSession: codexHistory.exportSession,
   toggleFavorite,
   updateTitle,

@@ -134,3 +134,24 @@ test('每条欠账都写了归属说明（没有说明的欠账等于没人认�
     assert.ok(typeof note === 'string' && note.trim().length > 0, `${c} 缺少说明`);
   }
 });
+
+// ==================== 注释行过滤 ====================
+
+test('整行注释里的调用不算真实调用（否则「解释为什么删掉它」会被当成没删）', () => {
+  const { stripCommentLines } = require('./check-message-contracts');
+  const src = [
+    "      // 注意：这里原先还会 callJs('taskHealthUpdate', ...)",
+    "       * 见 sendToJava('get_mode')",
+    "      this.bridge.callJs('onTaskEvent', json);",
+  ].join('\n');
+  const stripped = stripCommentLines(src);
+  assert.ok(!stripped.includes('taskHealthUpdate'));
+  assert.ok(!stripped.includes('get_mode'));
+  assert.ok(stripped.includes("callJs('onTaskEvent'"));
+});
+
+test('注释行过滤不影响正常代码行', () => {
+  const { stripCommentLines } = require('./check-message-contracts');
+  const src = "const a = 1;\nsendToJava('x');";
+  assert.strictEqual(stripCommentLines(src), src);
+});

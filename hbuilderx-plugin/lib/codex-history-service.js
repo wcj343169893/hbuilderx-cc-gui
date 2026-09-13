@@ -804,6 +804,87 @@ function loadSessionMessages(sessionId) {
   return { found: true, threadId, cwd, messages: convertRolloutToMessages(objs) };
 }
 
+/** 每页的「人类轮次」数，对齐上游 HISTORY_USER_TURN_LIMIT。 */
+const HISTORY_USER_TURN_LIMIT = 30;
+
+/**
+ * 是不是「人类发起的一轮」的起点。
+ *
+ * 转换后的消息里，工具结果同样是 type:'user'（内容被规整成 '[tool_result]'），它们属于**当前轮**
+ * 而不是新一轮。按 type==='user' 数轮次会把一轮里的每次工具往返都算成一轮，分页边界完全错位。
+ */
+function isHumanUserMessage(msg) {
+  return !!msg && msg.type === 'user' && msg.content !== '[tool_result]';
+}
+
+/** 每个人类轮次在 messages 里的起始下标。 */
+function turnStartIndexes(messages) {
+  const idx = [];
+  for (let i = 0; i < messages.length; i++) {
+    if (isHumanUserMessage(messages[i])) idx.push(i);
+  }
+  return idx;
+}
+
+/**
+ * 按人类轮次分页读取某 Codex 会话（B3 / 上游 v0.4.8）。
+ *
+ * @param {string} sessionId
+ * @param {number|null} beforeTurn 取 [beforeTurn-pageSize, beforeTurn) 这一段；传 null 表示「最近一页」
+ * @param {number} [pageSize]
+ * @returns {{found:boolean, threadId:string, cwd:string, messages:object[],
+ *            fromTurn:number, toTurn:number, totalTurns:number, cursorReset:boolean}}
+ *
+ * cursorReset：磁盘上的会话比前端记的还短（会话被删改过）时为 true，此时退化为「最近一页」，
+ * 调用方应按 replace 模式整体替换，而不是往上拼。
+ */
+function loadSessionPage(sessionId, beforeTurn, pageSize) {
+  const size = Number.isFinite(pageSize) && pageSize > 0 ? Math.floor(pageSize) : HISTORY_USER_TURN_LIMIT;
+  const empty = {
+    found: false, threadId: sessionId, cwd: '', messages: [],
+    fromTurn: 0, toTurn: 0, totalTurns: 0, cursorReset: false,
+  };
+  const file = findSessionFile(sessionId);
+  if (!file) return empty;
+
+  const objs = readJsonlObjects(file);
+  let threadId = sessionId;
+  let cwd = '';
+  const meta = objs.find((o) => o.type === 'session_meta' && o.payload);
+  if (meta) {
+    if (typeof meta.payload.id === 'string' && meta.payload.id) threadId = meta.payload.id;
+    if (typeof meta.payload.cwd === 'string') cwd = meta.payload.cwd;
+  }
+
+  const all = convertRolloutToMessages(objs);
+  const starts = turnStartIndexes(all);
+  const totalTurns = starts.length;
+
+  let cursorReset = false;
+  let toTurn;
+  if (beforeTurn == null) {
+    toTurn = totalTurns;
+  } else if (beforeTurn > totalTurns) {
+    // 光标比磁盘上的轮次还大：会话在别处被改短了，退化为最近一页并让调用方走 replace
+    cursorReset = true;
+    toTurn = totalTurns;
+  } else {
+    toTurn = Math.max(0, Math.floor(beforeTurn));
+  }
+  const fromTurn = Math.max(0, toTurn - size);
+
+  // 首个人类轮次之前还可能有内容（会话开头的系统/工具消息）。取第 0 轮时把它们一并带上，
+  // 否则那段内容永远加载不到。
+  const start = fromTurn === 0 ? 0 : starts[fromTurn];
+  const end = toTurn >= totalTurns ? all.length : starts[toTurn];
+
+  return {
+    found: true, threadId, cwd,
+    messages: all.slice(start, end),
+    fromTurn, toTurn, totalTurns, cursorReset,
+  };
+}
+
 // ==================== 删除 / 导出 ====================
 
 /**
@@ -841,6 +922,10 @@ function exportSession(sessionId, title) {
 }
 
 module.exports = {
+  loadSessionPage,
+  isHumanUserMessage,
+  turnStartIndexes,
+  HISTORY_USER_TURN_LIMIT,
   scanProjectSessions,
   loadSessionMessages,
   deleteSession,

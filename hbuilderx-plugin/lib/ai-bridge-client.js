@@ -36,6 +36,7 @@ class AiBridgeClient {
    * @param {string} [aiBridgeDir]
    */
   constructor(nodePath, output, aiBridgeDir, extraEnv) {
+    this._daemonListeners = [];
     this.nodePath = nodePath;
     this.output = output || { appendLine() {} };
     this.aiBridgeDir = aiBridgeDir || resolveAiBridgeDir();
@@ -52,6 +53,17 @@ class AiBridgeClient {
   }
 
   /** 启动 daemon，等待 ready 事件。 */
+  /** 注册 daemon 轮间事件监听器（task_event / session_updated …）。 */
+  onDaemonEvent(fn) {
+    if (typeof fn === 'function' && !this._daemonListeners.includes(fn)) this._daemonListeners.push(fn);
+  }
+
+  /** 注销监听器。 */
+  offDaemonEvent(fn) {
+    const i = this._daemonListeners.indexOf(fn);
+    if (i >= 0) this._daemonListeners.splice(i, 1);
+  }
+
   start() {
     if (this._readyPromise) return this._readyPromise;
     if (!this.aiBridgeDir) {
@@ -130,6 +142,18 @@ class AiBridgeClient {
         this.output.appendLine(`[ai-bridge:log] ${obj.message}`);
       } else {
         this.output.appendLine(`[ai-bridge:daemon] ${obj.event}`);
+      }
+      // 轮间事件（task_event / session_updated …）必须派发出去。
+      // 此前这里只写一行日志就丢弃 —— 异步子代理的完成信号（task_notification）正是走这条路：
+      // 它常常在本轮 result 之后才到，那时 executeTurn 已经 break、turnSink 被清空，
+      // daemon 只能用原始 stdout 行把它送出来。丢掉 = 后台子代理永远停在 running。
+      // 监听器抛错只记日志、不中断其它监听器（对齐 Java DaemonBridge.handleDaemonEvent）。
+      for (const fn of this._daemonListeners) {
+        try {
+          fn(obj);
+        } catch (e) {
+          this.output.appendLine(`[ai-bridge] daemon 事件监听器异常: ${e && e.message ? e.message : e}`);
+        }
       }
       return;
     }

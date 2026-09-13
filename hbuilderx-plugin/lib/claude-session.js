@@ -28,6 +28,18 @@ const MODEL_CONTEXT_LIMITS = {
   'claude-opus-4-7[1m]': 1000000,
   'claude-opus-4-6[1m]': 1000000,
   'claude-haiku-4-5': 200000,
+  // B3（上游 v0.4.8）补齐：缺这些条目时会退到默认 200k，上下文百分比显示严重偏离
+  // （gpt-5.6 系列实际 1.05M，按 200k 算会虚高 5 倍）。
+  'claude-opus-5': 200000,
+  'claude-opus-5[1m]': 1000000,
+  'claude-sonnet-5': 200000,
+  'claude-sonnet-5[1m]': 1000000,
+  'claude-sonnet-4-7': 200000,
+  'claude-sonnet-4-7[1m]': 1000000,
+  'gpt-5.6-sol': 1050000,
+  'gpt-5.6-terra': 1050000,
+  'gpt-5.6-luna': 1050000,
+  'gpt-5.5': 1000000,
   'gpt-5.4': 1000000,
   'gpt-5.4-mini': 400000,
   'gpt-5.3-codex': 258000,
@@ -145,7 +157,25 @@ class ClaudeSessionAssembler {
    * @param {Array<{type:string,content:any,timestamp:number|string,raw?:object}>} messages
    */
   loadHistoryMessages(messages) {
-    if (!Array.isArray(messages)) return;
+    const converted = this._toAssemblerMessages(messages);
+    for (const m of converted) this.messages.push(m);
+  }
+
+  /**
+   * 把更早的一页历史插到列表**头部**（Codex「加载更早」分页用）。
+   *
+   * 必须是 unshift 而不是 push：装配器的消息顺序要与前端一致，否则 _pushMessages 全量下发时
+   * 更早的历史会出现在最新消息之后。
+   */
+  prependHistoryMessages(messages) {
+    const converted = this._toAssemblerMessages(messages);
+    if (converted.length) this.messages.unshift(...converted);
+  }
+
+  /** 前端消息结构 → 装配器内部结构。loadHistoryMessages / prependHistoryMessages 共用。 */
+  _toAssemblerMessages(messages) {
+    const out = [];
+    if (!Array.isArray(messages)) return out;
     for (const msg of messages) {
       const type = (msg.type || '').toLowerCase() === 'assistant' ? 'assistant' : 'user';
       let content = '';
@@ -165,13 +195,14 @@ class ClaudeSessionAssembler {
         && Array.isArray(msg.raw.content)
         && msg.raw.content.some((/** @type {any} */ b) => b && b.type === 'tool_result');
       const raw = msg.raw || null;
-      this.messages.push({
+      out.push({
         type,
         content: hasToolResult ? '[tool_result]' : content,
         timestamp: msg.timestamp || Date.now(),
         raw,
       });
     }
+    return out;
   }
 
   /** 追加一条用户消息（本地回显，发送前调用）。 */
@@ -468,6 +499,16 @@ class ClaudeSessionAssembler {
   _handleSystem(jsonStr) {
     try {
       const obj = JSON.parse(jsonStr);
+      // 异步子代理生命周期（B3 / 上游 v0.4.8）的**轮内**路径：task_started / task_progress /
+      // task_notification 在本轮 result 之前到达时，走普通 [MESSAGE] 流进到这里。
+      // 原文透传，不重新序列化——前端 parseTaskNotification 认的是 SDK 的 snake_case 原始结构。
+      // 轮间路径（result 之后才到的那些）在 message-router._handleDaemonEvent，两条都要有：
+      // 上游明确把这称为 defense-in-depth，少任一条都会出现「子代理永远 running」。
+      const subtype = obj && typeof obj.subtype === 'string' ? obj.subtype : null;
+      if (subtype && subtype.startsWith('task_')) {
+        this.js.callJs('onTaskEvent', jsonStr);
+        return; // task_* 不携带 slash_commands
+      }
       const cmds = obj && (obj.slash_commands || (obj.message && obj.message.slash_commands));
       if (Array.isArray(cmds) && cmds.length) {
         this.js.callJs('updateSlashCommands', JSON.stringify(cmds));
