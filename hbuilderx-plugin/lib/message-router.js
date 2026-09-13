@@ -11,6 +11,7 @@ const { ClaudeSessionAssembler } = require('./claude-session');
 const { PermissionBridge } = require('./permission-bridge');
 const { resolveTheme } = require('./webview-host');
 const prefs = require('./prefs');
+const { writeJsonSecure } = require('./secure-file');
 const skillsService = require('./skills-service');
 const uniAgentSkillsInstaller = require('./uni-agent-skills-installer');
 const historyService = require('./history-service');
@@ -228,7 +229,8 @@ class MessageRouter {
         providers: providersMap,
         current: this.activeProviderId || null,
       });
-      fs.writeFileSync(file, JSON.stringify(config, null, 2), 'utf-8');
+      // 含 provider API Key：按 0600 写入（安全加固，上游 v0.4.6）
+      writeJsonSecure(file, config);
     } catch (e) {
       this.output.appendLine(`[router] 写入 ~/.codemoss/config.json 失败: ${e && e.message}`);
     }
@@ -335,8 +337,8 @@ class MessageRouter {
   /** 回写整个 config.json（须先读后改再写，避免抹掉 claude 等其它段）。 */
   _writeCodemossConfig(config) {
     const file = path.join(os.homedir(), '.codemoss', 'config.json');
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify(config, null, 2), 'utf-8');
+    // 含 provider API Key：按 0600 写入（安全加固，上游 v0.4.6）
+    writeJsonSecure(file, config);
   }
 
   /** 取（并按需初始化）config 的 codex 段，保证 providers 为对象。 */
@@ -1021,6 +1023,42 @@ class MessageRouter {
   }
 
   /**
+   * 把新的权限模式推给 daemon 中正在服务本轮对话的持久 runtime，使其对本轮后续工具调用
+   * 立即生效（对齐 Java `PermissionModeHandler.pushPermissionModeLive`）。
+   *
+   * 三条约束：
+   * - **只对 Claude 生效**：只有 Claude 的持久 runtime 支持在活动查询上热换模式；Codex 每轮
+   *   重建 thread 选项（发送时 payload 已携带 permissionMode），天然就是「下一轮生效」。
+   * - **不唤醒 daemon**：daemon 没在跑就直接返回。`request()` 带自愈重启，若无脑调用会出现
+   *   「用户只是改了个下拉框，却拉起一个 node 进程」。没在跑时本就没有活动轮次可切。
+   * - **fire-and-forget**：失败只写日志。模式已持久化，下一条消息必然生效，不该因此打断用户。
+   */
+  _pushPermissionModeLive() {
+    if (this.provider !== 'claude') return;
+    const mode = this.permissionMode;
+    if (!mode) return;
+    const bridge = this.aiBridge;
+    if (!bridge || typeof bridge.request !== 'function') return;
+    const snapshot = typeof bridge.getProcessSnapshot === 'function' ? bridge.getProcessSnapshot() : null;
+    if (!snapshot || !snapshot.alive) return;
+
+    Promise.resolve()
+      .then(() => bridge.request('claude.setPermissionMode', {
+        sessionId: this.sessionId || null,
+        runtimeSessionEpoch: this.runtimeSessionEpoch || null,
+        permissionMode: mode,
+      }))
+      .then(() => {
+        this.output.appendLine(`[router] 权限模式热切换已下发: ${mode}`);
+      })
+      .catch((e) => {
+        this.output.appendLine(
+          `[router] 权限模式热切换下发失败（已持久化，下一条消息生效）: ${e && e.message ? e.message : e}`
+        );
+      });
+  }
+
+  /**
    * 解析当前项目根目录作为发送时的 cwd。
    * 注意：hx.workspace.getWorkspaceFolders() 返回 Promise（见 HBuilderX 文档），必须 await；
    * WorkspaceFolder.uri 可能是字符串路径或 Uri 对象。
@@ -1298,6 +1336,9 @@ class MessageRouter {
         this.permissionMode = content || this.permissionMode;
         this._persist({ permissionMode: this.permissionMode });
         this.bridge.callJs('onModeChanged', this.permissionMode);
+        // 权限模式热切换（上游 v0.4.6）：对话进行中切换模式要对**本轮后续工具调用**立即生效，
+        // 而不是等下一条用户消息。见 _pushPermissionModeLive。
+        this._pushPermissionModeLive();
         break;
       // 移植缺口修复：前端 settingsBootstrap 启动时会 get_mode 兜底轮询（防止与 bootstrap()
       // 的 onModeReceived 首发竞态错过），此前无 case 静默丢弃。原样回显当前模式即可，幂等。

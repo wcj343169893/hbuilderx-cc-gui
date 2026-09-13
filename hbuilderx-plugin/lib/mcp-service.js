@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { writeJsonSecure } = require('./secure-file');
 const os = require('os');
 
 /**
@@ -122,9 +123,8 @@ function writeClaudeJsonMcp(mutate) {
     }
   }
   mutate(config);
-  const dir = path.dirname(file);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(config, null, 2), 'utf-8');
+  // MCP server 定义的 env 段常放 token：按 0600 写入（安全加固，上游 v0.4.6）
+  writeJsonSecure(file, config);
 }
 
 // ==================== Claude 列表（合并全局 + 项目级）====================

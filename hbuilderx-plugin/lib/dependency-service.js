@@ -347,7 +347,10 @@ async function install(p) {
       // 残缺的平台包目录（上次超时中断留下）npm 不会修复，必须先删掉才能重新完整解压；
       // 删掉后 lock 仍记着该包已装，不带 --force 的 npm install 直接跳过它，故清理过就同时加 --force
       const cleaned = removeBrokenPlatformPackage(sdkId, log);
-      const args = ['install', '--include=optional', '--prefix', dir];
+      // 安全加固（上游 v0.4.6）：禁用包生命周期脚本（pre/post/install）——这是经典的
+      // npm postinstall 供应链 RCE 面。已核对 Claude/Codex SDK 及其依赖树都不声明安装脚本，
+      // 因此功能行为不变，只是把这条路堵死。
+      const args = ['install', '--include=optional', '--ignore-scripts', '--prefix', dir];
       if (attempt > 0 || cleaned) args.push('--force'); // 重试用 --force 覆盖
       args.push(...specs);
       log(`npm ${args.join(' ')}`);
