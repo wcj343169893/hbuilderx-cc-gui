@@ -20,6 +20,7 @@ const mcpService = require('./mcp-service');
 const dependencyService = require('./dependency-service');
 const { CodexQuotaService, resolveAccessMode: resolveCodexAccessMode } = require('./codex-quota-service');
 const codexRuntime = require('./codex-runtime');
+const webviewAssets = require('./webview-assets');
 
 // ===== @文件补全（list_files）扫描参数 =====
 // 对齐 IDEA 版 FileSystemCollector 的硬编码跳过集 / 上限（含递归深度与单目录子项数）。
@@ -1468,6 +1469,11 @@ class MessageRouter {
         this.bridge.callJs('updateSlashCommands', JSON.stringify(this._builtinSlashCommands()));
         break;
       // ===== 技能面板（Skills）=====
+      // 资源通道：前端按需索取 html/chunks/ 下的大块资源（mermaid 整包、非内置语言包）。
+      // 缺此 case 会让图表渲染与小语种界面静默退化，见 lib/webview-assets.js
+      case 'get_webview_asset':
+        this._handleGetWebviewAsset(content);
+        break;
       case 'get_all_skills':
         this._handleGetAllSkills();
         break;
@@ -3325,6 +3331,40 @@ class MessageRouter {
    * 含停用态（管理目录），回 SkillsConfig 形状（global/local/user/repo）。
    * 出错也回空壳形状，避免前端 Object.values(undefined) 崩溃。
    */
+  /**
+   * get_webview_asset：把 html/chunks/ 下的资源按名字读出来回传给前端。
+   * 前端：webview/src/utils/webviewAssets.ts（取不到时自行降级，不会卡住界面）
+   */
+  _handleGetWebviewAsset(content) {
+    let requestId = '';
+    let name = '';
+    try {
+      const payload = JSON.parse(content || '{}');
+      requestId = typeof payload.requestId === 'string' ? payload.requestId : '';
+      name = typeof payload.name === 'string' ? payload.name : '';
+    } catch (e) {
+      this.output.appendLine(`[router] get_webview_asset 参数解析失败: ${e && e.message}`);
+    }
+    if (!requestId) {
+      return; // 没有 requestId 无法回传，直接丢弃（前端会超时降级）
+    }
+
+    const result = webviewAssets.readWebviewAsset(name);
+    if (result.error) {
+      this.output.appendLine(`[router] get_webview_asset 取不到 ${name}: ${result.error}`);
+    }
+    try {
+      this.bridge.callJs('onWebviewAsset', JSON.stringify({
+        requestId,
+        name,
+        content: result.error ? null : result.content,
+        error: result.error || undefined,
+      }));
+    } catch (e) {
+      this.output.appendLine(`[router] get_webview_asset 回调失败: ${e && e.message}`);
+    }
+  }
+
   async _handleGetAllSkills() {
     let payload = { global: {}, local: {}, user: {}, repo: {} };
     try {

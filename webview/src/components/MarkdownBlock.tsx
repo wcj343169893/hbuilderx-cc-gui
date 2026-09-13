@@ -35,6 +35,7 @@ import xml from 'highlight.js/lib/languages/xml';
 import yaml from 'highlight.js/lib/languages/yaml';
 import 'highlight.js/styles/github-dark.css';
 import { markedHighlight } from 'marked-highlight';
+import { fetchWebviewAsset, importModuleFromSource } from '../utils/webviewAssets';
 
 const SAFE_HREF_PROTOCOL_REGEX = /^(?:https?|mailto):/i;
 const FILE_URI_SCHEME_REGEX = /^file:/i;
@@ -139,11 +140,34 @@ hljs.registerAliases(['html', 'xhtml', 'svg'], { languageName: 'xml' });
 hljs.registerAliases(['yml'], { languageName: 'yaml' });
 
 // Lazy-loaded mermaid singleton (deferred until first diagram is encountered)
-let mermaidInstance: typeof import('mermaid').default | null = null;
+type MermaidApi = typeof import('mermaid').default;
+let mermaidInstance: MermaidApi | null = null;
+
+/**
+ * 取 mermaid 实例，两条来源：
+ *   1. 外置产物：经资源通道取 html/chunks/mermaid-bundle.js，blob import（HBuilderX 版默认走这条，
+ *      产物里没有 mermaid，省掉约 2.6MB 的下发与解析）
+ *   2. 内联产物：`import('mermaid')`（IDEA 版 / npm run build:inline 的上游兼容产物）
+ * 两条都失败时抛错，调用方已有降级：移除 loading 占位、保留原始代码块。
+ */
+async function loadMermaidApi(): Promise<MermaidApi> {
+  const source = await fetchWebviewAsset('mermaid-bundle.js');
+  if (source) {
+    const mod = await importModuleFromSource(source);
+    const api = mod?.default as MermaidApi | undefined;
+    if (api) return api;
+  }
+  if (!__CCGUI_INLINE_MERMAID__) {
+    throw new Error('mermaid bundle unavailable');
+  }
+  const mod = await import('mermaid');
+  return mod.default;
+}
+
 async function getMermaid() {
   if (!mermaidInstance) {
-    const mod = await import('mermaid');
-    mermaidInstance = mod.default;
+    const api = await loadMermaidApi();
+    mermaidInstance = api;
     mermaidInstance.initialize({
       startOnLoad: false,
       theme: 'dark',

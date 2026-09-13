@@ -17,6 +17,7 @@
  */
 
 const path = require('path');
+const webviewAssets = require('../../hbuilderx-plugin/lib/webview-assets');
 const { ClaudeSessionAssembler } = require('../../hbuilderx-plugin/lib/claude-session');
 const { processOutputLine } = require('../../hbuilderx-plugin/lib/stream-adapter');
 
@@ -37,6 +38,8 @@ class MockDaemon {
     this.projectName = o.projectName || 'demo-project';
     this.projectPath = o.projectPath || 'D:/demo/demo-project';
     this.sessionId = '';
+    // 资源通道开关：测试把它置 true 可模拟「宿主没实现 / chunk 缺失」，验证降级路径
+    this.assetsUnavailable = o.assetsUnavailable === true;
 
     // 出站事件日志（测试可断言「前端发了哪些事件」）
     this.outbound = [];
@@ -147,6 +150,29 @@ class MockDaemon {
         this._callJs('onProjectChanged', [JSON.stringify({ name: this.projectName, path: this.projectPath })]);
         this._callJs('updateProjectInfo', [JSON.stringify({ name: this.projectName, path: this.projectPath, available: true })]);
         break;
+      // 资源通道：走**生产实现** lib/webview-assets.js 真实读 html/chunks/，
+      // 这样 e2e 覆盖的是用户实际拿到的那条链路（前端 blob import + 宿主读盘）。
+      // assetsUnavailable=true 时模拟「宿主未实现 / 文件缺失」，用于验证降级。
+      case 'get_webview_asset': {
+        let requestId = '';
+        let name = '';
+        try {
+          const payload = JSON.parse(content || '{}');
+          requestId = payload.requestId || '';
+          name = payload.name || '';
+        } catch (e) { /* 非法 JSON 按取不到处理 */ }
+        if (!requestId) break;
+        const result = this.assetsUnavailable
+          ? { error: 'simulated unavailable' }
+          : webviewAssets.readWebviewAsset(name);
+        this._callJs('onWebviewAsset', [JSON.stringify({
+          requestId,
+          name,
+          content: result.error ? null : result.content,
+          error: result.error || undefined,
+        })]);
+        break;
+      }
       case 'refresh_slash_commands':
         this._callJs('updateSlashCommands', [JSON.stringify(this._builtinSlashCommands())]);
         break;

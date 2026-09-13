@@ -50,6 +50,22 @@ if (!fs.existsSync(htmlFile)) {
 }
 console.log(`[bundle] ✓ html 就位: ${path.relative(repoRoot, htmlFile)} (${humanSize(fs.statSync(htmlFile).size)})`);
 
+// 1.1) 校验资源通道的 chunks（mermaid 整包 + 按需语言包）
+// 默认产物把 mermaid 外置，缺了它图表会退化成代码块；语言包缺了小语种界面退回英文。
+const chunksDir = path.join(pluginRoot, 'html', 'chunks');
+const REQUIRED_CHUNKS = ['mermaid-bundle.js'];
+if (!fs.existsSync(chunksDir)) {
+  fail(`缺少 ${path.relative(repoRoot, chunksDir)}。请先构建：cd ../webview && npm run build（其中的 build:chunks 会生成）`);
+}
+for (const name of REQUIRED_CHUNKS) {
+  const p = path.join(chunksDir, name);
+  if (!fs.existsSync(p)) {
+    fail(`缺少 chunk: ${path.relative(repoRoot, p)}。请执行 cd ../webview && npm run build:chunks`);
+  }
+}
+const localeChunks = fs.readdirSync(chunksDir).filter((n) => /^locale-[\w-]+\.json$/.test(n));
+console.log(`[bundle] ✓ chunks 就位: ${path.relative(repoRoot, chunksDir)} (${humanSize(dirSize(chunksDir))}，含 ${localeChunks.length} 个按需语言包)`);
+
 // 2) 校验 ai-bridge 源与其依赖
 if (!fs.existsSync(path.join(srcAiBridge, 'daemon.js'))) {
   fail(`未找到仓库根的 ai-bridge/daemon.js: ${srcAiBridge}`);

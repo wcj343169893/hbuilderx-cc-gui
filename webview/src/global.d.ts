@@ -1,4 +1,10 @@
 /**
+ * 构建期注入（见 vite.config.ts）：当前产物是否内联了 mermaid。
+ * false 表示 mermaid 整包外置，运行时经资源通道按需取回。
+ */
+declare const __CCGUI_INLINE_MERMAID__: boolean;
+
+/**
  * Global window interface extensions for IDEA plugin communication
  */
 interface Window {
@@ -369,6 +375,13 @@ interface Window {
    * File path resolved callback - receives the resolved absolute path for a file link tooltip.
    */
   onFilePathResolved?: (json: string) => void;
+
+  /**
+   * 资源通道回调：宿主按 get_webview_asset 请求回传资源内容。
+   * json: { requestId: string, name: string, content: string | null, error?: string }
+   * 见 utils/webviewAssets.ts —— 用于按需取 mermaid 整包与非内置语言包。
+   */
+  onWebviewAsset?: (json: string) => void;
 
   /**
    * Show success message

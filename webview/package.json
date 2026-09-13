@@ -6,10 +6,12 @@
   "scripts": {
     "dev": "vite",
     "prebuild": "node scripts/extract-version.mjs",
-    "build": "tsc && vite build",
-    "postbuild": "node scripts/copy-dist.mjs",
+    "build": "tsc && vite build && npm run build:chunks",
+    "postbuild": "node scripts/copy-dist.mjs --hbx-only",
     "test": "vitest run && tsc -p tsconfig.test.json --noEmit",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "build:chunks": "vite build --config vite.config.mermaid.mts && node scripts/emit-chunks.mjs",
+    "build:inline": "node scripts/extract-version.mjs && tsc && vite build --mode inline && node scripts/copy-dist.mjs"
   },
   "devDependencies": {
     "@testing-library/dom": "^10.4.0",

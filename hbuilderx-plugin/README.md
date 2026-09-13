@@ -107,14 +107,21 @@ webview(React 单文件 HTML) ⟷ extension.js(HBuilderX 插件进程, 内置 No
 | `lib/dependency-service.js` | **SDK 联网安装/卸载/升级/版本查询**（`~/.codemoss/dependencies`） | dependency/DependencyManager + DependencyHandler |
 | Provider 管理（在 `message-router.js` 内） | get/add/update/delete/switch/sort + 激活 provider env 注入 daemon | handler/provider/* + cc-switch |
 | `html/claude-chat.html` | 前端构建产物（自动生成，勿手改，已 gitignored） | 同名资源 |
+| `html/chunks/` | 资源通道的按需资源（mermaid 整包、未内置语言包；自动生成、已 gitignored） | —（IDEA 版内联进单文件） |
+| `lib/webview-assets.js` | 资源通道宿主侧：按白名单读 `html/chunks/` 并经桥接下发 | —（IDEA 版无此机制） |
 
 ## 构建与调试
 
-1. 构建前端（生成 `html/claude-chat.html`）：
+1. 构建前端（生成 `html/claude-chat.html` 与 `html/chunks/`）：
    ```bash
    cd ../webview && npm install && npm run build
    ```
-   `scripts/copy-dist.mjs` 会把单文件产物同时复制到本目录 `html/`。
+   `scripts/copy-dist.mjs` 把单文件产物复制到本目录 `html/`；`scripts/emit-chunks.mjs` 把
+   mermaid 整包与未内置语言包输出到 `html/chunks/`。
+   > **为什么有 chunks**：HBuilderX 的 webview 只接受 HTML 字符串、没有基准 URL，产物只能是单文件；
+   > 而 mermaid 整包近 4MB，若留在产物里就变成每次打开面板都要解析的死重量。现在它改为按需经
+   > 桥接下发（`get_webview_asset` → `lib/webview-assets.js`），主产物从 5.81MB 降到 2.17MB。
+   > 需要上游兼容的「全内联」产物（给 IDEA 版）时用 `npm run build:inline`。
 2. 安装 ai-bridge 自身依赖（仅 `sql.js`，用于读 cc-switch 数据库）：
    ```bash
    cd ../ai-bridge && npm install
@@ -136,12 +143,13 @@ webview(React 单文件 HTML) ⟷ extension.js(HBuilderX 插件进程, 内置 No
 **必须自包含**这两样运行时产物，否则在别的电脑启动会报：
 
 - `读取 HTML 失败: ENOENT ... \html\claude-chat.html` —— 缺 webview 构建产物
+- 图表渲染不出来、只显示 mermaid 源码 —— 缺 `html/chunks/mermaid-bundle.js`（`npm run bundle` 会拦住这种情况）
 - `ai-bridge 启动失败: 未找到 ai-bridge 目录（daemon.js）` —— 缺桥接（它原本在仓库根，不在插件目录内）
 
 发行步骤（缺一不可）：
 
 ```bash
-# 1) 构建前端（生成 hbuilderx-plugin/html/claude-chat.html）
+# 1) 构建前端（生成 hbuilderx-plugin/html/claude-chat.html 与 html/chunks/）
 cd webview && npm install && npm run build
 # 2) 安装 ai-bridge 依赖（sql.js）
 cd ../ai-bridge && npm install
