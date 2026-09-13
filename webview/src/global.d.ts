@@ -13,6 +13,9 @@ interface Window {
    */
   sendToJava?: (message: string) => void;
 
+  /** Re-rasterize the JCEF surface after its IntelliJ content tab is activated. */
+  onTabActivated?: () => void;
+
   /**
    * Get clipboard file path from Java
    */
@@ -27,6 +30,12 @@ interface Window {
    * Update messages from backend
    */
   updateMessages?: (json: string, sequence?: string | number) => void;
+  /** Replace a long conversation's tail without resending its unchanged prefix. */
+  updateMessageTail?: (
+    json: string,
+    baseIndex: string | number,
+    sequence?: string | number,
+  ) => void;
 
   /**
    * Patch a single message UUID without re-sending the full message list.
@@ -95,6 +104,28 @@ interface Window {
    * Add single history message (used for Codex session loading)
    */
   addHistoryMessage?: (message: any) => void;
+  beginCodexHistoryPage?: (json: string) => void;
+  appendCodexHistoryPageBatch?: (pageId: string, json: string) => void;
+  appendCodexHistoryPageChunk?: (
+    pageId: string,
+    chunk: string,
+    transferId: string,
+    isFinal: string | boolean,
+  ) => void;
+  completeCodexHistoryPage?: (json: string) => void;
+  codexHistoryPageError?: (json: string) => void;
+  codexHistoryPageRenderComplete?: () => void;
+  __codexHistoryPageInfo?: {
+    pageId: string;
+    sessionId: string;
+    mode: 'replace' | 'prepend';
+    fromTurn: number;
+    toTurn: number;
+    totalTurns: number;
+    hasMore: boolean;
+    loadedMessageCount: number;
+    cursorReset?: boolean;
+  };
 
   /**
    * History load complete callback - invoked when history messages finish loading.
@@ -106,6 +137,15 @@ interface Window {
    * Subagent sidechain history callback.
    */
   onSubagentHistoryLoaded?: (json: string) => void;
+
+  /**
+   * task_* SDK system event callback (async subagent lifecycle).
+   * Payload: { subtype: 'task_started'|'task_progress'|'task_notification',
+   *   task_id, tool_use_id, status?, summary?, usage?, output_file? }.
+   * task_notification carries the terminal status and result summary that the
+   * StatusPanel uses to mark a background (run_in_background) Agent subagent as completed.
+   */
+  onTaskEvent?: (eventJson: string) => void;
 
   /**
    * SDK-to-CLI session conversion result callback.
@@ -822,6 +862,10 @@ interface Window {
   __pendingUpdateJson?: string | null;
   __pendingUpdateSequence?: number | null;
   __minAcceptedUpdateSequence?: number;
+  /** Number of paged history messages prepended ahead of the backend session snapshot. */
+  __prependedHistoryMessageCount?: number;
+  /** Backend index represented by the first non-prepended message; zero means its full prefix is present. */
+  __messageBaseIndex?: number;
   /** Cancel pending rAF-deferred updateMessages (set by messageCallbacks, called by onStreamEnd). */
   __cancelPendingUpdateMessages?: () => void;
 

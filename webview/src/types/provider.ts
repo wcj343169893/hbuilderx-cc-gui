@@ -52,6 +52,7 @@ export const STORAGE_KEYS = {
  */
 export const CLAUDE_MODEL_MAPPING_ENV_KEYS = [
   'ANTHROPIC_MODEL',
+  'ANTHROPIC_DEFAULT_FABLE_MODEL',
   'ANTHROPIC_DEFAULT_HAIKU_MODEL',
   'ANTHROPIC_DEFAULT_SONNET_MODEL',
   'ANTHROPIC_DEFAULT_OPUS_MODEL',
@@ -165,6 +166,7 @@ export interface ProviderConfig {
       ANTHROPIC_AUTH_TOKEN?: string;
       ANTHROPIC_BASE_URL?: string;
       ANTHROPIC_MODEL?: string;
+      ANTHROPIC_DEFAULT_FABLE_MODEL?: string;
       ANTHROPIC_DEFAULT_SONNET_MODEL?: string;
       ANTHROPIC_DEFAULT_OPUS_MODEL?: string;
       ANTHROPIC_DEFAULT_HAIKU_MODEL?: string;
@@ -383,6 +385,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     env: {
       ANTHROPIC_BASE_URL: 'https://open.bigmodel.cn/api/anthropic',
       ANTHROPIC_AUTH_TOKEN: '',
+      ANTHROPIC_DEFAULT_FABLE_MODEL: 'glm-4.7',
       ANTHROPIC_DEFAULT_HAIKU_MODEL: 'glm-4.7',
       ANTHROPIC_DEFAULT_SONNET_MODEL: 'glm-4.7',
       ANTHROPIC_DEFAULT_OPUS_MODEL: 'glm-4.7',
@@ -394,6 +397,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     env: {
       ANTHROPIC_BASE_URL: 'https://api.moonshot.cn/anthropic',
       ANTHROPIC_AUTH_TOKEN: '',
+      ANTHROPIC_DEFAULT_FABLE_MODEL: 'kimi-k2.5',
       ANTHROPIC_DEFAULT_HAIKU_MODEL: 'kimi-k2.5',
       ANTHROPIC_DEFAULT_SONNET_MODEL: 'kimi-k2.5',
       ANTHROPIC_DEFAULT_OPUS_MODEL: 'kimi-k2.5',
@@ -405,6 +409,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     env: {
       ANTHROPIC_BASE_URL: 'https://api.deepseek.com/anthropic',
       ANTHROPIC_AUTH_TOKEN: '',
+      ANTHROPIC_DEFAULT_FABLE_MODEL: 'deepseek-v4-pro[1m]',
       ANTHROPIC_DEFAULT_HAIKU_MODEL: 'deepseek-v4-flash',
       ANTHROPIC_DEFAULT_SONNET_MODEL: 'deepseek-v4-pro[1m]',
       ANTHROPIC_DEFAULT_OPUS_MODEL: 'deepseek-v4-pro[1m]',
@@ -420,6 +425,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
       // MiniMax models respond slowly; requires 50-minute timeout (3,000,000ms) to avoid truncating long reasoning requests
       API_TIMEOUT_MS: '3000000',
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+      ANTHROPIC_DEFAULT_FABLE_MODEL: 'MiniMax-M2.1',
       ANTHROPIC_DEFAULT_SONNET_MODEL: 'MiniMax-M2.1',
       ANTHROPIC_DEFAULT_OPUS_MODEL: 'MiniMax-M2.1',
       ANTHROPIC_DEFAULT_HAIKU_MODEL: 'MiniMax-M2.1',
@@ -431,6 +437,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     env: {
       ANTHROPIC_BASE_URL: 'https://api.xiaomimimo.com/anthropic',
       ANTHROPIC_AUTH_TOKEN: '',
+      ANTHROPIC_DEFAULT_FABLE_MODEL: 'mimo-v2.5-pro',
       ANTHROPIC_DEFAULT_HAIKU_MODEL: 'mimo-v2.5-pro',
       ANTHROPIC_DEFAULT_SONNET_MODEL: 'mimo-v2.5-pro',
       ANTHROPIC_DEFAULT_OPUS_MODEL: 'mimo-v2.5-pro',
@@ -442,6 +449,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     env: {
       ANTHROPIC_BASE_URL: 'https://token-plan-cn.xiaomimimo.com/anthropic',
       ANTHROPIC_AUTH_TOKEN: '',
+      ANTHROPIC_DEFAULT_FABLE_MODEL: 'mimo-v2.5-pro',
       ANTHROPIC_DEFAULT_HAIKU_MODEL: 'mimo-v2.5-pro',
       ANTHROPIC_DEFAULT_SONNET_MODEL: 'mimo-v2.5-pro',
       ANTHROPIC_DEFAULT_OPUS_MODEL: 'mimo-v2.5-pro',
@@ -453,6 +461,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     env: {
       ANTHROPIC_BASE_URL: 'https://dashscope.aliyuncs.com/apps/anthropic',
       ANTHROPIC_AUTH_TOKEN: '',
+      ANTHROPIC_DEFAULT_FABLE_MODEL: 'qwen3-max',
       ANTHROPIC_DEFAULT_HAIKU_MODEL: 'qwen3-max',
       ANTHROPIC_DEFAULT_SONNET_MODEL: 'qwen3-max',
       ANTHROPIC_DEFAULT_OPUS_MODEL: 'qwen3-max',
@@ -464,6 +473,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     env: {
       ANTHROPIC_BASE_URL: 'https://openrouter.ai/api',
       ANTHROPIC_AUTH_TOKEN: '',
+      ANTHROPIC_DEFAULT_FABLE_MODEL: 'anthropic/claude-fable-5',
       ANTHROPIC_DEFAULT_HAIKU_MODEL: 'anthropic/claude-haiku-4.5',
       ANTHROPIC_DEFAULT_SONNET_MODEL: 'anthropic/claude-sonnet-4.5',
       ANTHROPIC_DEFAULT_OPUS_MODEL: 'anthropic/claude-opus-4.5',

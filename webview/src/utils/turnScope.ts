@@ -39,11 +39,11 @@ export function finalizeTodosForSettledTurn(todos: TodoItem[], isStreaming: bool
   ));
 }
 
-export function finalizeSubagentsForSettledTurn(subagents: SubagentInfo[], isStreaming: boolean): SubagentInfo[] {
-  if (isStreaming) return subagents;
-  return subagents.map((subagent) => (
-    subagent.status === 'running'
-      ? { ...subagent, status: 'completed' }
-      : subagent
-  ));
+export function finalizeSubagentsForSettledTurn(subagents: SubagentInfo[], _isStreaming: boolean): SubagentInfo[] {
+  // A settled main turn is not evidence that a run_in_background agent ended:
+  // the launch turn completes while the sidechain may still be running. Async
+  // agents are finalized only by task_notification or by a sidechain transcript
+  // ending in assistant/end_turn (resolved in useSubagents). Sync agents already
+  // derive their terminal state from the Agent tool_result.
+  return subagents;
 }

@@ -4,7 +4,8 @@ import type { ClaudeContentBlock, ToolResultBlock } from '../../types';
 import { normalizeToolName } from '../../utils/toolConstants';
 import { sendBridgeEvent } from '../../utils/bridge';
 import { getPersistedExpanded, setPersistedExpanded } from '../../utils/expandedState';
-import { useSubagentHistoryGetter, useSessionId, useGetToolResultRaw, type GetToolResultRawFn } from '../../contexts/SubagentContext';
+import { extractResultText, isAsyncAgentInput, parseAgentToolMeta } from '../../utils/subagentResult';
+import { useSubagentHistories, useSessionId, useGetToolResultRaw, useTaskEvent } from '../../contexts/SubagentContext';
 import SubagentProcessDetails from '../StatusPanel/SubagentProcessDetails';
 import { ContentBlockRenderer } from '../MessageItem/ContentBlockRenderer';
 import { formatSubagentDuration } from '../StatusPanel/subagentProcess';
@@ -47,37 +48,6 @@ function getAgentType(block: ClaudeContentBlock): string {
   return typeof t === 'string' ? t : '';
 }
 
-function extractResultText(result?: ToolResultBlock | null): string | undefined {
-  if (!result) return undefined;
-  if (typeof result.content === 'string') return result.content;
-  if (Array.isArray(result.content)) {
-    return result.content
-      .filter((item): item is { type: string; text: string } => item?.type === 'text' && typeof item.text === 'string')
-      .map((item) => item.text)
-      .join('\n') || undefined;
-  }
-  return undefined;
-}
-
-function parseAgentToolMeta(
-  getToolResultRaw: GetToolResultRawFn,
-  toolUseId?: string,
-): { agentId?: string; totalDurationMs?: number; totalTokens?: number; totalToolUseCount?: number } {
-  if (!toolUseId) return {};
-  const rawMessage = getToolResultRaw(toolUseId);
-  const metadata = rawMessage?.toolUseResult;
-  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return {};
-  const record = metadata as Record<string, unknown>;
-  const getString = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : undefined);
-  const getNumber = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) ? value : undefined);
-  return {
-    agentId: getString(record.agentId),
-    totalDurationMs: getNumber(record.totalDurationMs),
-    totalTokens: getNumber(record.totalTokens),
-    totalToolUseCount: getNumber(record.totalToolUseCount),
-  };
-}
-
 const AgentGroupBlock = memo(function AgentGroupBlock({
   agentBlock,
   followingBlocks,
@@ -88,7 +58,7 @@ const AgentGroupBlock = memo(function AgentGroupBlock({
   findToolResult,
 }: AgentGroupBlockProps) {
   const { t } = useTranslation();
-  const getSubagentHistory = useSubagentHistoryGetter();
+  const histories = useSubagentHistories();
   const currentSessionId = useSessionId();
   const getToolResultRaw = useGetToolResultRaw();
 
@@ -105,8 +75,16 @@ const AgentGroupBlock = memo(function AgentGroupBlock({
 
   const input = agentBlock.type === 'tool_use' ? (agentBlock.input as Record<string, unknown> | undefined) : undefined;
   const result = findToolResult(toolId, messageIndex);
-  const isCompleted = result !== undefined && result !== null;
-  const isError = isCompleted && result?.is_error === true;
+  const hasTerminalResult = result !== undefined && result !== null;
+
+  // A background (run_in_background) Agent only gets a launch acknowledgment
+  // tool_result; its real terminal status arrives later via task_notification,
+  // so stay "running" until that event lands. Sync agents complete inline.
+  // isAsyncAgentInput centralizes the strict === true check (and the snake/camel
+  // guard) shared with useSubagents and TaskExecutionBlock.
+  const isAsync = isAsyncAgentInput(input);
+  const taskEvent = useTaskEvent(toolId);
+  const taskFailed = taskEvent?.status === 'failed' || taskEvent?.status === 'stopped';
 
   const agentType = getAgentType(agentBlock);
   const summary = getAgentSummary(agentBlock);
@@ -114,7 +92,18 @@ const AgentGroupBlock = memo(function AgentGroupBlock({
 
   const agentToolMeta = parseAgentToolMeta(getToolResultRaw, toolId);
   const agentId = agentToolMeta.agentId ?? (input?.agent_id as string | undefined) ?? (input?.agentId as string | undefined);
-  const history = (toolId ? getSubagentHistory(toolId) : undefined) ?? (agentId ? getSubagentHistory(agentId) : undefined);
+  const history = (toolId ? histories[toolId] : undefined) ?? (agentId ? histories[agentId] : undefined);
+  // A settled main turn is only the launch boundary for a background Agent. Use
+  // the live task_notification or a terminal sidechain end_turn as completion.
+  // A failed launch (validation error before the task was registered) returns an
+  // is_error tool_result and never emits a task_notification, so treat that as
+  // an error instead of staying stuck on "running".
+  const isCompleted = isAsync
+    ? (taskEvent ? !taskFailed : history?.completed === true)
+    : hasTerminalResult;
+  const isError = isAsync
+    ? (taskEvent ? taskFailed : result?.is_error === true)
+    : hasTerminalResult && result?.is_error === true;
 
   const noopToggleThinking = useCallback(() => {}, []);
 
@@ -133,7 +122,10 @@ const AgentGroupBlock = memo(function AgentGroupBlock({
 
   useEffect(() => {
     // Clear existing timer when dependencies change or conditions no longer met
-    if (!expanded || !currentSessionId || !toolId || isCompleted || history) {
+    // 两侧的短路条件是互补的，都要保留：
+    // history —— 本仓库加的，历史已拉到就别再轮询（省掉一次无用往返）
+    // isError —— 上游 v0.4.8 加的，失败的任务不该继续轮询（否则永远轮下去）
+    if (!expanded || !currentSessionId || !toolId || isCompleted || isError || history) {
       if (pollingTimerRef.current !== null) {
         window.clearInterval(pollingTimerRef.current);
         pollingTimerRef.current = null;
@@ -159,7 +151,7 @@ const AgentGroupBlock = memo(function AgentGroupBlock({
         pollingTimerRef.current = null;
       }
     };
-  }, [agentId, currentSessionId, summary, expanded, history, isCompleted, toolId]);
+  }, [agentId, currentSessionId, summary, expanded, history, isCompleted, isError, toolId]);
 
   // Live elapsed time counter
   const [liveElapsedMs, setLiveElapsedMs] = useState(0);
@@ -231,11 +223,11 @@ const AgentGroupBlock = memo(function AgentGroupBlock({
       {expanded && (
         <div className="task-details agent-group-content">
           <SubagentProcessDetails
-            agentId={agentId}
-            totalDurationMs={agentToolMeta.totalDurationMs}
-            totalTokens={agentToolMeta.totalTokens}
-            totalToolUseCount={agentToolMeta.totalToolUseCount}
-            resultText={extractResultText(result)}
+            agentId={(isAsync ? taskEvent?.agentId : undefined) ?? agentId}
+            totalDurationMs={(isAsync ? taskEvent?.totalDurationMs : undefined) ?? agentToolMeta.totalDurationMs}
+            totalTokens={(isAsync ? taskEvent?.totalTokens : undefined) ?? agentToolMeta.totalTokens}
+            totalToolUseCount={(isAsync ? taskEvent?.totalToolUseCount : undefined) ?? agentToolMeta.totalToolUseCount}
+            resultText={(isAsync ? taskEvent?.summary : undefined) ?? extractResultText(result)}
             history={history}
             canLoad={Boolean(currentSessionId)}
           />

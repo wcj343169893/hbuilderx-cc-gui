@@ -18,6 +18,7 @@ const createProvider = (): ProviderConfig => ({
       ANTHROPIC_BASE_URL: 'https://open.bigmodel.cn/api/anthropic',
       ANTHROPIC_AUTH_TOKEN: '',
       ANTHROPIC_MODEL: 'glm-4.7',
+      ANTHROPIC_DEFAULT_FABLE_MODEL: 'glm-4.7',
       ANTHROPIC_DEFAULT_HAIKU_MODEL: 'glm-4.7',
       ANTHROPIC_DEFAULT_SONNET_MODEL: 'glm-4.7',
       ANTHROPIC_DEFAULT_OPUS_MODEL: 'glm-4.7',
@@ -33,6 +34,7 @@ const createCustomProxyProvider = (): ProviderConfig => ({
     env: {
       ANTHROPIC_BASE_URL: 'https://my-proxy.example.com/v1',
       ANTHROPIC_AUTH_TOKEN: 'sk-test',
+      ANTHROPIC_DEFAULT_FABLE_MODEL: 'custom-fable',
       ANTHROPIC_DEFAULT_HAIKU_MODEL: 'custom-haiku',
       ANTHROPIC_DEFAULT_SONNET_MODEL: 'custom-sonnet',
       ANTHROPIC_DEFAULT_OPUS_MODEL: 'custom-opus',
@@ -104,6 +106,7 @@ describe('ProviderDialog', () => {
     // Model mapping should be visible even for unrecognized proxy URLs
     expect(screen.getByText('settings.provider.dialog.modelMapping')).toBeTruthy();
     // Should have the custom model values populated
+    expect((screen.getByLabelText('settings.provider.dialog.fableModel') as HTMLInputElement).value).toBe('custom-fable');
     expect((screen.getByLabelText('settings.provider.dialog.sonnetModel') as HTMLInputElement).value).toBe('custom-sonnet');
     expect((screen.getByLabelText('settings.provider.dialog.opusModel') as HTMLInputElement).value).toBe('custom-opus');
     expect((screen.getByLabelText('settings.provider.dialog.haikuModel') as HTMLInputElement).value).toBe('custom-haiku');
@@ -139,6 +142,9 @@ describe('ProviderDialog', () => {
     fireEvent.change(screen.getByLabelText('settings.provider.dialog.sonnetModel'), {
       target: { value: '' },
     });
+    fireEvent.change(screen.getByLabelText('settings.provider.dialog.fableModel'), {
+      target: { value: '' },
+    });
     fireEvent.change(screen.getByLabelText('settings.provider.dialog.opusModel'), {
       target: { value: '' },
     });
@@ -156,6 +162,7 @@ describe('ProviderDialog', () => {
 
     expect(env.ANTHROPIC_BASE_URL).toBe('https://open.bigmodel.cn/api/anthropic');
     expect(env.ANTHROPIC_MODEL).toBeUndefined();
+    expect(env.ANTHROPIC_DEFAULT_FABLE_MODEL).toBeUndefined();
     expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBeUndefined();
     expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBeUndefined();
     expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBeUndefined();

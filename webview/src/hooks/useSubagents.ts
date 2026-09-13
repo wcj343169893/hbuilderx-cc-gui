@@ -1,7 +1,9 @@
 import { useMemo } from 'react';
-import type { ClaudeMessage, ClaudeRawMessage, ClaudeContentBlock, ToolResultBlock, SubagentInfo, SubagentStatus } from '../types';
+import type { ClaudeMessage, ClaudeRawMessage, ClaudeContentBlock, ToolResultBlock, SubagentHistoryResponse, SubagentInfo, SubagentStatus, TaskEvent, TaskEventMap } from '../types';
 import { normalizeToolInput } from '../utils/toolInputNormalization';
 import { normalizeToolName } from '../utils/toolConstants';
+import { extractResultText, isAsyncAgentInput } from '../utils/subagentResult';
+import { useTaskEvents } from '../contexts/SubagentContext';
 
 type GetToolResultRawFn = (toolUseId: string) => ClaudeRawMessage | null;
 
@@ -10,12 +12,38 @@ interface UseSubagentsParams {
   getContentBlocks: (message: ClaudeMessage) => ClaudeContentBlock[];
   findToolResult: (toolUseId?: string, messageIndex?: number) => ToolResultBlock | null;
   getToolResultRaw: GetToolResultRawFn;
+  subagentHistories?: Record<string, SubagentHistoryResponse>;
 }
 
 /**
- * Determine subagent status based on tool result
+ * Determine subagent status.
+ *
+ * Async agents (Agent/Task tool invoked with run_in_background:true) only
+ * receive a launch acknowledgment tool_result, not a completion signal. The
+ * terminal status arrives later via a task_notification event, so while no
+ * event has landed the agent is still running.
+ *
+ * Sync agents (task/agent without run_in_background) run inline: a tool_result
+ * means the agent is done.
  */
-function determineStatus(result: ToolResultBlock | null): SubagentStatus {
+function determineStatus(
+  result: ToolResultBlock | null,
+  isAsync: boolean,
+  taskEvent: TaskEvent | undefined,
+): SubagentStatus {
+  if (isAsync) {
+    if (taskEvent) {
+      return taskEvent.status === 'failed' || taskEvent.status === 'stopped' ? 'error' : 'completed';
+    }
+    // A failed launch (validation error before the background task was
+    // registered) returns an is_error tool_result and never emits a
+    // task_notification - surface it as an error instead of staying stuck on
+    // "running" forever.
+    if (result?.is_error) {
+      return 'error';
+    }
+    return 'running';
+  }
   if (!result) {
     return 'running';
   }
@@ -25,45 +53,36 @@ function determineStatus(result: ToolResultBlock | null): SubagentStatus {
   return 'completed';
 }
 
-function extractResultText(result: ToolResultBlock | null): string | undefined {
-  if (!result) return undefined;
-  if (typeof result.content === 'string') return result.content;
-  if (!Array.isArray(result.content)) return undefined;
-  const text = result.content
-    .map((item) => (item && typeof item.text === 'string' ? item.text : ''))
-    .filter(Boolean)
-    .join('\n');
-  return text || undefined;
-}
-
 function extractResultMetadata(
   result: ToolResultBlock | null,
   getToolResultRaw: GetToolResultRawFn,
   toolUseId: string,
+  taskEvent: TaskEvent | undefined,
 ): Partial<SubagentInfo> {
   const rawMessage = getToolResultRaw(toolUseId);
   const metadata = rawMessage?.toolUseResult;
-  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
-    return { resultText: extractResultText(result) };
-  }
+  const record = metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+    ? (metadata as Record<string, unknown>)
+    : null;
 
-  const record = metadata as Record<string, unknown>;
   const getString = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : undefined);
   const getNumber = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) ? value : undefined);
-  const toolStats = record.toolStats && typeof record.toolStats === 'object' && !Array.isArray(record.toolStats)
+  const toolStats = record?.toolStats && typeof record.toolStats === 'object' && !Array.isArray(record.toolStats)
     ? Object.fromEntries(
       Object.entries(record.toolStats as Record<string, unknown>)
         .filter((entry): entry is [string, number] => typeof entry[1] === 'number' && Number.isFinite(entry[1])),
     )
     : undefined;
 
+  // task_notification wins over toolUseResult: for async agents the launch
+  // tool_result carries no usage, so the event is the only source of truth.
   return {
-    agentId: getString(record.agentId),
-    totalDurationMs: getNumber(record.totalDurationMs),
-    totalTokens: getNumber(record.totalTokens),
-    totalToolUseCount: getNumber(record.totalToolUseCount),
+    agentId: taskEvent?.agentId ?? getString(record?.agentId),
+    totalDurationMs: taskEvent?.totalDurationMs ?? getNumber(record?.totalDurationMs),
+    totalTokens: taskEvent?.totalTokens ?? getNumber(record?.totalTokens),
+    totalToolUseCount: taskEvent?.totalToolUseCount ?? getNumber(record?.totalToolUseCount),
     toolStats,
-    resultText: extractResultText(result),
+    resultText: taskEvent?.summary ?? extractResultText(result),
   };
 }
 
@@ -72,6 +91,7 @@ export function extractSubagentsFromMessages(
   getContentBlocks: (message: ClaudeMessage) => ClaudeContentBlock[],
   findToolResult: (toolUseId?: string, messageIndex?: number) => ToolResultBlock | null,
   getToolResultRaw: GetToolResultRawFn,
+  taskEvents: TaskEventMap = {},
 ): SubagentInfo[] {
   const subagents: SubagentInfo[] = [];
 
@@ -101,8 +121,12 @@ export function extractSubagentsFromMessages(
       // Check tool result to determine status
       const toolUseId = block.id ?? '';
       const result = findToolResult(toolUseId, messageIndex);
-      const status = determineStatus(result);
-      const resultMetadata = extractResultMetadata(result, getToolResultRaw, toolUseId);
+      const taskEvent = taskEvents[toolUseId];
+      // isAsync is read via the shared isAsyncAgentInput helper so the
+      // StatusPanel list and the inline Agent cards stay in lockstep.
+      const isAsync = isAsyncAgentInput(input);
+      const status = determineStatus(result, isAsync, taskEvent);
+      const resultMetadata = extractResultMetadata(result, getToolResultRaw, toolUseId, taskEvent);
 
       subagents.push({
         id,
@@ -110,6 +134,7 @@ export function extractSubagentsFromMessages(
         description,
         prompt,
         status,
+        isAsync,
         messageIndex,
         ...resultMetadata,
       });
@@ -119,17 +144,37 @@ export function extractSubagentsFromMessages(
   return subagents;
 }
 
+export function applySubagentHistoryCompletion(
+  subagents: SubagentInfo[],
+  subagentHistories: Record<string, SubagentHistoryResponse>,
+): SubagentInfo[] {
+  return subagents.map((subagent) => {
+    if (!subagent.isAsync || subagent.status !== 'running') return subagent;
+    const history = subagentHistories[subagent.id]
+      ?? (subagent.agentId ? subagentHistories[subagent.agentId] : undefined);
+    return history?.completed ? { ...subagent, status: 'completed' as const } : subagent;
+  });
+}
+
 /**
- * Hook to extract subagent information from Task tool calls
+ * Hook to extract subagent information from Task tool calls.
  */
 export function useSubagents({
   messages,
   getContentBlocks,
   findToolResult,
   getToolResultRaw,
+  subagentHistories = {},
 }: UseSubagentsParams): SubagentInfo[] {
-  return useMemo(
-    () => extractSubagentsFromMessages(messages, getContentBlocks, findToolResult, getToolResultRaw),
-    [messages, getContentBlocks, findToolResult, getToolResultRaw],
-  );
+  const taskEvents = useTaskEvents();
+  return useMemo(() => {
+    const extracted = extractSubagentsFromMessages(
+      messages,
+      getContentBlocks,
+      findToolResult,
+      getToolResultRaw,
+      taskEvents,
+    );
+    return applySubagentHistoryCompletion(extracted, subagentHistories);
+  }, [messages, getContentBlocks, findToolResult, getToolResultRaw, taskEvents, subagentHistories]);
 }

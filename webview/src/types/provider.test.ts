@@ -13,6 +13,7 @@ describe('PROVIDER_PRESETS', () => {
     expect(deepseek?.env).toMatchObject({
       ANTHROPIC_AUTH_TOKEN: '',
       ANTHROPIC_BASE_URL: 'https://api.deepseek.com/anthropic',
+      ANTHROPIC_DEFAULT_FABLE_MODEL: 'deepseek-v4-pro[1m]',
       ANTHROPIC_DEFAULT_SONNET_MODEL: 'deepseek-v4-pro[1m]',
       ANTHROPIC_DEFAULT_OPUS_MODEL: 'deepseek-v4-pro[1m]',
       ANTHROPIC_DEFAULT_HAIKU_MODEL: 'deepseek-v4-flash',
@@ -24,6 +25,7 @@ describe('PROVIDER_PRESETS', () => {
     const xiaomi = PROVIDER_PRESETS.find(provider => provider.id === 'xiaomi');
 
     expect(xiaomi?.env).toMatchObject({
+      ANTHROPIC_DEFAULT_FABLE_MODEL: 'mimo-v2.5-pro',
       ANTHROPIC_DEFAULT_HAIKU_MODEL: 'mimo-v2.5-pro',
       ANTHROPIC_DEFAULT_SONNET_MODEL: 'mimo-v2.5-pro',
       ANTHROPIC_DEFAULT_OPUS_MODEL: 'mimo-v2.5-pro',

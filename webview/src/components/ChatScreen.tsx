@@ -25,7 +25,7 @@ import type { ClaudeMessage, TodoItem, ToolResultBlock } from '../types';
 import type { useMessageProcessing, useFileChanges, useSubagents, useFileChangesManagement, useModelProviderState, useMessageQueue } from '../hooks';
 import type { GetToolResultRawFn } from '../contexts/SubagentContext';
 
-type SubagentHistoryGetter = (key: string) => ReturnType<typeof useMessages>['subagentHistories'][string] | undefined;
+type SubagentHistoryMap = ReturnType<typeof useMessages>['subagentHistories'];
 type ProviderState = ReturnType<typeof useModelProviderState>;
 type MessageQueueValue = ReturnType<typeof useMessageQueue>['queue'];
 type SubagentList = ReturnType<typeof useSubagents>;
@@ -44,7 +44,7 @@ export interface ChatScreenProps {
   subagents: SubagentList;
   globalTodos: TodoItem[];
   filteredFileChanges: FileChangeList;
-  subagentHistoryCtxValue: SubagentHistoryGetter;
+  subagentHistoryCtxValue: SubagentHistoryMap;
   sessionIdCtxValue: { currentSessionId: string | null };
 
   // Refs
@@ -256,6 +256,7 @@ export const ChatScreen = ({
                     setCurrentView('settings');
                   }}
                   currentProvider={currentProvider}
+                  currentSessionId={currentSessionId}
                 />
               </ToolResultRawContext.Provider>
             </SubagentHistoryContext.Provider>
