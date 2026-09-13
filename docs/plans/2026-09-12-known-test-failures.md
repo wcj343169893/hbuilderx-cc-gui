@@ -145,8 +145,12 @@ TS 会把所有被覆盖字段放宽成「可能 undefined」；而 `useMessageS
    `node hbuilderx-plugin/scripts/check-message-contracts.js`、
    `node --test hbuilderx-plugin/lib/*.test.js` 全绿~~ —— **已完成（2026-09-13）**：
    `webview npm test`（vitest 84 files/679 tests + tsc）、`e2e npm test`（12 tests）、
-   `node --test hbuilderx-plugin/lib/*.test.js`（5 tests）均已全绿。
-   契约校验脚本仍是 26 个缺口（B0b 尚未开始，不属于本清单范围）。
-2. 把它们接进 `.github/workflows` 作为 PR 门禁（移植方案 B0 已列此项，即 B0c）——
-   门禁必须在基线全绿之后才有意义，现在满足前提，可以开始
+   `node --test hbuilderx-plugin/lib/*.test.js`（5 tests）、契约校验脚本（B0b 已清零 26 个缺口）
+   均已全绿。
+2. ~~把它们接进 `.github/workflows` 作为 PR 门禁（移植方案 B0 已列此项，即 B0c）~~ ——
+   **已完成（2026-09-13）**：新增 `.github/workflows/hbuilderx-ci.yml`，push/PR 触发，两个 job——
+   webview（`npm test` 两段 + `npm run build` + 产物体积写入 job summary + 契约校验 +
+   `hbuilderx-plugin/lib` node 测试）→ e2e（下载 webview 构建产物 + `playwright install` + `npm test`）。
+   与已有的 `build.yml`/`wsl-integration-tests.yml`（构建/测试 IDEA 版 Gradle 插件）互不重叠。
+   **B0 三步（B0a 测试修复 → B0b 契约清零 → B0c CI 门禁）至此全部完成**，可以开始 B1。
 3. ~~第 2 条修好前，不要开始「消息插队 v2」~~ —— 幽灵气泡根因已修复，「消息插队 v2」的前置阻塞已解除

@@ -66,8 +66,9 @@ git merge up-v0.4.7                # 解冲突 → 补后端 → 验收 → 合�
 
 理由：540 个提交一次性 merge，冲突会在 54 个文件里叠加成一团，且一旦出问题无法二分定位。逐 tag 合并后，每一批都是「可构建、可自测、可发版」的状态。
 
-> **门禁前提**：B0 的三项既有测试失败未修之前，`npm test`（vitest + tsc 两段）与 e2e 套件都不是可信门禁，
-> 下面每批次的「验收」也就无从谈起。所以 B0 必须先做，且三项修完要确认基线全绿。
+> **门禁前提（已满足，2026-09-13）**：B0 的三项既有测试失败已修、26 个契约缺口已清零、
+> CI 门禁已接入 `.github/workflows/hbuilderx-ci.yml`，`npm test`（vitest + tsc 两段）与
+> e2e 套件现在是可信门禁，下面每批次的「验收」有了依据，可以开始 B1。
 > 清单与定位见 `docs/plans/2026-09-12-known-test-failures.md`。
 
 ### 3.2 每个批次固定四步
@@ -85,7 +86,7 @@ git merge up-v0.4.7                # 解冲突 → 补后端 → 验收 → 合�
 
 | 批次 | 上游版本 | 规模（webview/ai-bridge/java 文件） | 主要新功能 | 需新增的 HBuilderX 后端 |
 |---|---|---|---|---|
-| B0 | —（前置） | — | 清理现存 26 个契约缺口；修 3 项既有测试失败（`ModelSelect` 单测过时、e2e `resume-replay` 幽灵气泡、测试目录 tsc 类型错误，详见 `docs/plans/2026-09-12-known-test-failures.md`）；**基线全绿后**再把契约校验 + webview 单测 + e2e 接入 `.github/workflows` | 26 个 case（详见 3.4） |
+| B0 | —（前置） | — | **已完成（2026-09-13）**：清理现存 26 个契约缺口；修 3 项既有测试失败（`ModelSelect` 单测过时、e2e `resume-replay` 幽灵气泡、测试目录 tsc 类型错误，详见 `docs/plans/2026-09-12-known-test-failures.md`）；基线全绿后把契约校验 + webview 单测 + e2e 接入 `.github/workflows/hbuilderx-ci.yml` | 26 个 case（详见 3.4，已全部实现或登记白名单） |
 | B1 | v0.4.6 | 54/23/38 | 权限模式热切换；**安全加固组**（默认 `default` 模式、PreToolUse 对 Bash/Agent 返回 `ask`、拦截 `NODE_OPTIONS`/`LD_PRELOAD`/`DYLD_*`、"始终允许"收敛到命令级、MCP stdio 元字符拒绝、`npm install --ignore-scripts`、配置文件 0600、危险路径检查扩展到 Bash 串与 `~`、Codex 沙箱默认 `workspace-write`） | `permission-bridge.js` / `permission-safety.js` 对齐；`dependency-service.js` 加 `--ignore-scripts`；配置写入权限 0600 |
 | B2 | v0.4.7 (+fix1/fix2) | 49/14/76 | MCP Marketplace（内置/官方 Registry/GitHub Registry 多源 + 磁盘缓存）；从 Copilot 配置导入 MCP；自定义模型自定义单价；AskUserQuestion 通知开关；消息尾部「详细输出」开关；GPT-5.6 Sol/Terra/Luna（本仓库已自行实现，合并时以上游实现为准） | `mcp-marketplace-service.js`（对应 `McpMarketplaceService` + 4 个 client）、`mcp-service.js` 扩展导入能力、`model-pricing-service.js`；case：`get_mcp_marketplace_sources`、`search_mcp_marketplace`、`parse_copilot_mcp_config`、`set_custom_model_pricing` |
 | B3 | v0.4.8 | 102/27/93 | 异步子代理生命周期跟踪（时长/token/用量，不再卡在 running）；Fable 档位贯通；Codex GPT-5.6 max reasoning 与模型别名 | `history-service.js` 分页：`load_codex_history_page`；子代理状态上报链路 |

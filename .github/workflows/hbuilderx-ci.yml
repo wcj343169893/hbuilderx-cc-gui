@@ -1,0 +1,114 @@
+name: HBuilderX Plugin CI
+
+# HBuilderX 版专属门禁：契约校验 + webview 单测/构建 + e2e。
+# 与 build.yml / wsl-integration-tests.yml（构建/测试的是 IDEA 版 Gradle 插件）互不重叠——
+# 那两个门禁完全不覆盖 hbuilderx-plugin/ + webview/ + ai-bridge/ 这条线。
+#
+# 背景：docs/plans/2026-09-12-upstream-sync-port-plan.md 的 B0（前置清理）要求，
+# 门禁必须在 3 项既有测试失败修完、26 个契约缺口清零后才有意义——这两件事已在
+# 2026-09-13 完成（见该文档 3.4 节 与 docs/plans/2026-09-12-known-test-failures.md），
+# 本工作流即 B0c：把它们接进 CI，此后每个 B1~B11 批次的合并都受它把关。
+
+on:
+  push:
+    branches: [ '**' ]
+  pull_request:
+    branches: [ '**' ]
+
+jobs:
+  webview:
+    name: webview 契约校验 + 单测 + 构建
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22.12.0'
+          cache: 'npm'
+          cache-dependency-path: webview/package-lock.json
+
+      - name: Install webview dependencies
+        working-directory: webview
+        run: npm ci
+
+      # npm test = vitest run && tsc -p tsconfig.test.json --noEmit（两段，见 package.json）
+      - name: webview unit tests + test-dir type check
+        working-directory: webview
+        run: npm test
+
+      # npm run build 内含 tsc（src 类型检查）+ vite build + build:chunks + copy-dist，
+      # 产物落到 hbuilderx-plugin/html/claude-chat.html，供下面的契约校验 / e2e 复用。
+      - name: Build webview (tsc + vite build)
+        working-directory: webview
+        run: npm run build
+
+      # 产物体积告警阈值：docs/plans/2026-09-12-webview-asset-splitting.md 瘦身后基线 2.17 MB
+      # （mermaid 外置）。每批次移植若明显推高这个数字，需要先拆入口/评估再继续（该文档第七节）。
+      - name: Report webview bundle size
+        run: |
+          SIZE_BYTES=$(stat -c%s hbuilderx-plugin/html/claude-chat.html)
+          SIZE_MB=$(awk "BEGIN{printf \"%.2f\", ${SIZE_BYTES}/1048576}")
+          echo "claude-chat.html: ${SIZE_MB} MB (${SIZE_BYTES} bytes)"
+          {
+            echo "### webview 主面板产物体积";
+            echo "\`claude-chat.html\`: **${SIZE_MB} MB**（基线 2.17 MB，见 webview-asset-splitting 方案）";
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # 治本工具：前端 sendToJava/sendBridgeEvent 事件名 vs message-router.js 的 case 是否一一对应，
+      # 缺口非空 exit 1。见 docs/plans/2026-09-12-upstream-sync-port-plan.md 第二节。
+      - name: Message contract check (frontend/backend event parity)
+        run: node hbuilderx-plugin/scripts/check-message-contracts.js
+
+      - name: hbuilderx-plugin lib unit tests
+        run: node --test hbuilderx-plugin/lib/*.test.js
+
+      - name: Upload webview build (for e2e job)
+        uses: actions/upload-artifact@v7
+        with:
+          name: hbuilderx-webview-build
+          path: hbuilderx-plugin/html/
+          retention-days: 1
+
+  e2e:
+    name: e2e（真实发布产物 + 真实桥接/装配器）
+    needs: webview
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22.12.0'
+          cache: 'npm'
+          cache-dependency-path: e2e/package-lock.json
+
+      - name: Download webview build
+        uses: actions/download-artifact@v8
+        with:
+          name: hbuilderx-webview-build
+          path: hbuilderx-plugin/html/
+
+      - name: Install e2e dependencies
+        working-directory: e2e
+        run: npm ci
+
+      - name: Install Playwright browsers
+        working-directory: e2e
+        run: npx playwright install --with-deps chromium
+
+      - name: Run e2e tests
+        working-directory: e2e
+        run: npm test
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report
+          path: e2e/playwright-report/
+          retention-days: 7
