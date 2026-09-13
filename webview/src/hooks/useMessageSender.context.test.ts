@@ -9,7 +9,7 @@ describe('useMessageSender - /context command', () => {
     t,
     addToast: vi.fn(),
     currentProvider: 'claude',
-    selectedModel: 'claude-opus-4-7',
+    selectedModel: 'claude-opus-4-8',
     permissionMode: 'default',
     reasoningEffort: 'high',
     codexFastMode: 'normal',
@@ -50,7 +50,7 @@ describe('useMessageSender - /context command', () => {
 
   it('sends get_context_usage with base model when longContext is disabled', () => {
     const opts = createOptions({
-      selectedModel: 'claude-opus-4-7',
+      selectedModel: 'claude-opus-4-8',
       longContextEnabled: false,
     });
 
@@ -65,13 +65,13 @@ describe('useMessageSender - /context command', () => {
     expect(call).toMatch(/^get_context_usage:/);
 
     const payload = JSON.parse(call.substring('get_context_usage:'.length));
-    expect(payload.model).toBe('claude-opus-4-7');
+    expect(payload.model).toBe('claude-opus-4-8');
     expect(payload.requestId).toBeTruthy();
   });
 
   it('sends get_context_usage with [1m] suffix when longContext is enabled', () => {
     const opts = createOptions({
-      selectedModel: 'claude-opus-4-7',
+      selectedModel: 'claude-opus-4-8',
       longContextEnabled: true,
     });
 
@@ -84,7 +84,7 @@ describe('useMessageSender - /context command', () => {
     expect(window.sendToJava).toHaveBeenCalledTimes(1);
     const call = (window.sendToJava as any).mock.calls[0][0] as string;
     const payload = JSON.parse(call.substring('get_context_usage:'.length));
-    expect(payload.model).toBe('claude-opus-4-7[1m]');
+    expect(payload.model).toBe('claude-opus-4-8[1m]');
   });
 
   it('opens dialog with loading state before sending bridge event', () => {
@@ -153,7 +153,7 @@ describe('useMessageSender - /context command', () => {
   it('includes explicit Claude high reasoning effort in plain message payload', () => {
     const opts = createOptions({
       currentProvider: 'claude',
-      selectedModel: 'claude-opus-4-7',
+      selectedModel: 'claude-opus-4-8',
       reasoningEffort: 'high',
     });
 
@@ -170,7 +170,7 @@ describe('useMessageSender - /context command', () => {
   it('includes explicit Claude high reasoning effort in attachment message payload', () => {
     const opts = createOptions({
       currentProvider: 'claude',
-      selectedModel: 'claude-opus-4-7',
+      selectedModel: 'claude-opus-4-8',
       reasoningEffort: 'high',
     });
 

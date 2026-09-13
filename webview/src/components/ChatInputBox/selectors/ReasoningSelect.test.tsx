@@ -9,13 +9,13 @@ vi.mock('react-i18next', () => ({
 }));
 
 describe('ReasoningSelect', () => {
-  it('shows xhigh and max for Claude Opus 4.7', () => {
+  it('shows xhigh and max for Claude Opus 4.8', () => {
     render(
       <ReasoningSelect
         value="high"
         onChange={vi.fn()}
         currentProvider="claude"
-        selectedModel="claude-opus-4-7"
+        selectedModel="claude-opus-4-8"
       />,
     );
 
@@ -32,6 +32,22 @@ describe('ReasoningSelect', () => {
         onChange={vi.fn()}
         currentProvider="claude"
         selectedModel="claude-sonnet-4-6"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button'));
+
+    expect(screen.queryByText('XHigh')).toBeNull();
+    expect(screen.getByText('Max')).toBeTruthy();
+  });
+
+  it('shows max but not xhigh for Claude Sonnet 5', () => {
+    render(
+      <ReasoningSelect
+        value="high"
+        onChange={vi.fn()}
+        currentProvider="claude"
+        selectedModel="claude-sonnet-5"
       />,
     );
 

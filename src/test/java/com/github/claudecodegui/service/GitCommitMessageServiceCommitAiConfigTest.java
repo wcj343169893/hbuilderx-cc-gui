@@ -29,12 +29,12 @@ public class GitCommitMessageServiceCommitAiConfigTest {
 
     @Test
     public void shouldRouteToResolvedClaudeModel() {
-        TestableGitCommitMessageService service = new TestableGitCommitMessageService(buildConfig("claude", "claude-opus-4-7", "gpt-5.5"));
+        TestableGitCommitMessageService service = new TestableGitCommitMessageService(buildConfig("claude", "claude-opus-4-8", "gpt-5.5"));
         ResultCapture callback = new ResultCapture();
 
         service.generateCommitMessage(Collections.<Change>emptyList(), callback);
 
-        assertEquals("claude-opus-4-7", service.lastClaudeModel);
+        assertEquals("claude-opus-4-8", service.lastClaudeModel);
         assertNull(service.lastCodexModel);
         assertEquals("fix: use claude routing", callback.success);
     }

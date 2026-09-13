@@ -43,11 +43,15 @@ export default defineConfig(({ mode }) => {
       // MarkdownBlock 用它决定是否还存在内联兜底路径
       __CCGUI_INLINE_MERMAID__: JSON.stringify(inlineMermaid),
     },
+    // 与上游对齐：`esbuild` 是 Vite 的顶层选项。本仓库此前写在 build.esbuild 下，
+    // 那个位置 Vite 根本不读，等于从未生效（所以 drop console 实际没发生过）。
+    // keepNames 是上游需要的（依赖运行时函数名），一并取上游。
+    esbuild: {
+      drop: ['debugger'] as const,
+      keepNames: true,
+    },
     build: {
-      minify: 'esbuild',
-      esbuild: {
-        drop: ['console', 'debugger'],
-      },
+      minify: 'esbuild' as const,
       assetsInlineLimit: 1024 * 1024,
       cssCodeSplit: false,
       sourcemap: false,

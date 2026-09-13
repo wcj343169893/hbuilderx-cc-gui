@@ -53,6 +53,8 @@ node_modules/
 **/node_modules/
 webview/dist/
 webview/dist-mermaid/
+webview/test-results/
+webview/playwright-report/
 
 src/main/resources/html/*
 

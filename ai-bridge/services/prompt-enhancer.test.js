@@ -36,7 +36,7 @@ test('resolvePromptEnhancerRuntimeConfig throws a strict error when manual provi
         effectiveProvider: null,
         resolutionSource: 'unavailable',
         models: {
-          claude: 'claude-opus-4-7',
+          claude: 'claude-opus-4-8',
           codex: 'gpt-5.4',
         },
         availability: {

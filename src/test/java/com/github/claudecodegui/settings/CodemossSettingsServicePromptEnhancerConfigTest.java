@@ -75,13 +75,13 @@ public class CodemossSettingsServicePromptEnhancerConfigTest {
 
         CodemossSettingsService service = new CodemossSettingsService();
 
-        invokeSetPromptEnhancerConfig(service, "claude", "claude-opus-4-7", "gpt-5.4");
+        invokeSetPromptEnhancerConfig(service, "claude", "claude-opus-4-8", "gpt-5.4");
         JsonObject config = invokeGetPromptEnhancerConfig(service);
 
         assertEquals("claude", config.get("provider").getAsString());
         assertEquals("claude", config.get("effectiveProvider").getAsString());
         assertEquals("manual", config.get("resolutionSource").getAsString());
-        assertEquals("claude-opus-4-7", config.getAsJsonObject("models").get("claude").getAsString());
+        assertEquals("claude-opus-4-8", config.getAsJsonObject("models").get("claude").getAsString());
         assertEquals("gpt-5.4", config.getAsJsonObject("models").get("codex").getAsString());
     }
 
@@ -93,7 +93,7 @@ public class CodemossSettingsServicePromptEnhancerConfigTest {
 
         CodemossSettingsService service = new CodemossSettingsService();
 
-        invokeSetPromptEnhancerConfig(service, "claude", "claude-opus-4-7", "gpt-5.4");
+        invokeSetPromptEnhancerConfig(service, "claude", "claude-opus-4-8", "gpt-5.4");
         JsonObject config = invokeGetPromptEnhancerConfig(service);
 
         assertEquals("claude", config.get("provider").getAsString());

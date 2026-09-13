@@ -21,14 +21,14 @@ public class ContextHandlerTest {
         JsonObject body = new JsonObject();
         body.addProperty("sessionId", "sess-123");
         body.addProperty("cwd", "/home/user/project");
-        body.addProperty("model", "claude-opus-4-7[1m]");
+        body.addProperty("model", "claude-opus-4-8[1m]");
         body.addProperty("requestId", "req-abc");
 
         String[] result = ContextHandler.parseContextUsageRequest(GSON, body.toString());
 
         assertEquals("sess-123", result[0]);
         assertEquals("/home/user/project", result[1]);
-        assertEquals("claude-opus-4-7[1m]", result[2]);
+        assertEquals("claude-opus-4-8[1m]", result[2]);
         assertEquals("req-abc", result[3]);
     }
 
@@ -70,14 +70,14 @@ public class ContextHandlerTest {
     public void parseNullJsonFieldsReturnNull() {
         JsonObject body = new JsonObject();
         body.add("sessionId", null);
-        body.addProperty("model", "claude-opus-4-7");
+        body.addProperty("model", "claude-opus-4-8");
         body.add("requestId", null);
 
         String[] result = ContextHandler.parseContextUsageRequest(GSON, body.toString());
 
         assertNull(result[0]); // sessionId is null
         assertNull(result[1]); // cwd not present
-        assertEquals("claude-opus-4-7", result[2]);
+        assertEquals("claude-opus-4-8", result[2]);
         assertNull(result[3]); // requestId is null
     }
 
@@ -94,11 +94,11 @@ public class ContextHandlerTest {
     @Test
     public void parseModelWith1MContextSuffix() {
         JsonObject body = new JsonObject();
-        body.addProperty("model", "claude-opus-4-7[1m]");
+        body.addProperty("model", "claude-opus-4-8[1m]");
 
         String[] result = ContextHandler.parseContextUsageRequest(GSON, body.toString());
 
-        assertEquals("claude-opus-4-7[1m]", result[2]);
+        assertEquals("claude-opus-4-8[1m]", result[2]);
     }
 
     @Test

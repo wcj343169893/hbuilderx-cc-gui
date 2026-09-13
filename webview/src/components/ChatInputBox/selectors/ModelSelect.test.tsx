@@ -76,8 +76,12 @@ describe('ModelSelect', () => {
     expect(screen.getByRole('button').textContent).toContain('glm-4.7');
   });
 
-  it('Claude 内置模型列表应移除已下线的 Opus 4.6，且不使用 [1m] 后缀 ID', () => {
+  it('Claude 内置模型列表应新增 Sonnet 5、保留 Sonnet 4.6，并移除 Opus 4.7', () => {
     const ids = CLAUDE_MODELS.map((model) => model.id);
+    expect(ids).toContain('claude-sonnet-5');
+    expect(ids).toContain('claude-sonnet-4-6');
+    expect(ids).toContain('claude-opus-4-8');
+    expect(ids).not.toContain('claude-opus-4-7');
     expect(ids).not.toContain('claude-opus-4-6');
     expect(ids.some((id) => id.endsWith('[1m]'))).toBe(false);
   });

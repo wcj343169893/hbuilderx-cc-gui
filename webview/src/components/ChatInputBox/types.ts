@@ -319,9 +319,9 @@ export const CLAUDE_MODELS: ModelInfo[] = [
     description: 'Opus 4.8 · Latest and most capable',
   },
   {
-    id: 'claude-opus-4-7',
-    label: 'Opus 4.7',
-    description: 'Opus 4.7 · Previous flagship model',
+    id: 'claude-sonnet-5',
+    label: 'Sonnet 5',
+    description: 'Sonnet 5 · Upgraded Sonnet model',
   },
   {
     id: 'claude-fable-5',
@@ -438,9 +438,9 @@ export const AVAILABLE_PROVIDERS: ProviderInfo[] = [
 export const EFFORT_SUPPORTED_CLAUDE_MODELS = new Set([
   'claude-fable-5',
   'claude-opus-4-8',
-  'claude-opus-4-7',
   'claude-opus-4-6',
   'claude-opus-4-6[1m]',
+  'claude-sonnet-5',
   'claude-sonnet-4-6',
 ]);
 
@@ -450,7 +450,6 @@ export const EFFORT_SUPPORTED_CLAUDE_MODELS = new Set([
 export const XHIGH_EFFORT_CLAUDE_MODELS = new Set([
   'claude-fable-5',
   'claude-opus-4-8',
-  'claude-opus-4-7',
 ]);
 
 /**
@@ -459,9 +458,9 @@ export const XHIGH_EFFORT_CLAUDE_MODELS = new Set([
 export const MAX_EFFORT_CLAUDE_MODELS = new Set([
   'claude-fable-5',
   'claude-opus-4-8',
-  'claude-opus-4-7',
   'claude-opus-4-6',
   'claude-opus-4-6[1m]',
+  'claude-sonnet-5',
   'claude-sonnet-4-6',
 ]);
 

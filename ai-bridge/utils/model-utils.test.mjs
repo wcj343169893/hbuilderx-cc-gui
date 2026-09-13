@@ -11,7 +11,7 @@ import {
 // --- mapModelIdToSdkName ------------------------------------------------
 
 test('mapModelIdToSdkName maps Claude families to short SDK names', () => {
-  assert.equal(mapModelIdToSdkName('claude-opus-4-7'), 'opus');
+  assert.equal(mapModelIdToSdkName('claude-opus-4-8'), 'opus');
   assert.equal(mapModelIdToSdkName('claude-haiku-4-5'), 'haiku');
   assert.equal(mapModelIdToSdkName('claude-sonnet-4-6'), 'sonnet');
   // Unknown / third-party IDs fall back to sonnet (because the SDK uses
@@ -34,7 +34,7 @@ test('resolveModelFromSettings applies model-specific settings mapping', () => {
     ANTHROPIC_DEFAULT_SONNET_MODEL: 'glm-4.7',
     ANTHROPIC_DEFAULT_HAIKU_MODEL: 'glm-4.7-flash',
   };
-  assert.equal(resolveModelFromSettings('claude-opus-4-7', env), 'glm-4.7-opus');
+  assert.equal(resolveModelFromSettings('claude-opus-4-8', env), 'glm-4.7-opus');
   assert.equal(resolveModelFromSettings('claude-sonnet-4-6', env), 'glm-4.7');
   assert.equal(resolveModelFromSettings('claude-haiku-4-5', env), 'glm-4.7-flash');
 });
@@ -45,7 +45,7 @@ test('resolveModelFromSettings honors global ANTHROPIC_MODEL override', () => {
     ANTHROPIC_DEFAULT_SONNET_MODEL: 'ignored',
   };
   assert.equal(resolveModelFromSettings('claude-sonnet-4-6', env), 'override-everywhere');
-  assert.equal(resolveModelFromSettings('claude-opus-4-7', env), 'override-everywhere');
+  assert.equal(resolveModelFromSettings('claude-opus-4-8', env), 'override-everywhere');
 });
 
 test('resolveModelFromSettings ignores empty / whitespace mapping values', () => {
@@ -54,7 +54,7 @@ test('resolveModelFromSettings ignores empty / whitespace mapping values', () =>
     ANTHROPIC_DEFAULT_OPUS_MODEL: '',
   };
   assert.equal(resolveModelFromSettings('claude-sonnet-4-6', env), 'claude-sonnet-4-6');
-  assert.equal(resolveModelFromSettings('claude-opus-4-7', env), 'claude-opus-4-7');
+  assert.equal(resolveModelFromSettings('claude-opus-4-8', env), 'claude-opus-4-8');
 });
 
 test('resolveModelFromSettings does NOT remap non-Anthropic model IDs', () => {
@@ -111,7 +111,7 @@ test('resolveModelFromSettings preserves [1m] across ANTHROPIC_MODEL global over
 
 test('resolveModelFromSettings preserves [1m] for opus mapping', () => {
   const env = { ANTHROPIC_DEFAULT_OPUS_MODEL: 'mimo-v2.5-pro' };
-  assert.equal(resolveModelFromSettings('claude-opus-4-7[1m]', env), 'mimo-v2.5-pro[1m]');
+  assert.equal(resolveModelFromSettings('claude-opus-4-8[1m]', env), 'mimo-v2.5-pro[1m]');
 });
 
 // --- setModelEnvironmentVariables ---------------------------------------
@@ -161,7 +161,7 @@ test('setModelEnvironmentVariables routes haiku base to haiku env', () => {
 
 test('modelSupportsVision only matches the canonical claude- prefix', () => {
   assert.equal(modelSupportsVision('claude-sonnet-4-6'), true);
-  assert.equal(modelSupportsVision('claude-opus-4-7'), true);
+  assert.equal(modelSupportsVision('claude-opus-4-8'), true);
   // Third-party proxies that merely contain "claude" must NOT be treated as
   // native vision-capable models.
   assert.equal(modelSupportsVision('claude-compatible-proxy'), true); // starts with 'claude-'
