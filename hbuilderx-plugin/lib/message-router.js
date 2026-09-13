@@ -12,6 +12,9 @@ const { PermissionBridge } = require('./permission-bridge');
 const { resolveTheme } = require('./webview-host');
 const prefs = require('./prefs');
 const { writeJsonSecure } = require('./secure-file');
+const mcpMarketplace = require('./mcp-marketplace-service');
+const mcpImport = require('./mcp-import-service');
+const modelPricing = require('./model-pricing-service');
 const skillsService = require('./skills-service');
 const uniAgentSkillsInstaller = require('./uni-agent-skills-installer');
 const historyService = require('./history-service');
@@ -105,7 +108,9 @@ class MessageRouter {
         this.output.appendLine('[router] 当前忙碌，compact 将在本轮回复完成后自动触发');
       }
     });
-    this.permission = new PermissionBridge(bridge, output);
+    this.permission = new PermissionBridge(bridge, output, {
+      notifyAskUserQuestion: () => this._notifyAskUserQuestion(),
+    });
     this.aiBridge = null;
     this.nodeInfo = null;
 
@@ -126,6 +131,9 @@ class MessageRouter {
     // Codex 思考深度 / 速度档位：前端每次发送都会随 payload 携带，这里仅作 payload 缺省时的兜底
     this.reasoningEffort = '';
     this.codexFastMode = 'normal';
+    // B2：AskUserQuestion 到达时是否额外弹一个 IDE 气泡提醒（opt-in，默认关）
+    this.askUserQuestionNotificationEnabled = this._prefs.askUserQuestionNotificationEnabled === true;
+    this._lastAskNotifyAt = 0;
     this.cwd = ''; // getWorkspaceFolders() 是异步的，构造里拿不到，改在 init()/发送前 await 解析
     this.projectName = ''; // 当前会话所属项目名（HBuilderX 可同时打开多个项目，顶部会话名后展示）
     this._busy = false;
@@ -1015,6 +1023,109 @@ class MessageRouter {
     ];
   }
 
+  // ===== B2：MCP Marketplace / Copilot 导入 / 自定义单价 =====
+
+  /**
+   * AskUserQuestion 到达时的 IDE 气泡提醒（opt-in，默认关）。
+   *
+   * 与上游的差异，需要如实说明：上游是自绘 Swing 滑入浮窗，能复用同一个窗口实例把上一个
+   * 顶掉；HBuilderX 没有浮窗 API，只能用 showInformationMessage（IDE 右下角气泡），多个
+   * 提醒会各自排队而不是互相覆盖。所以这里自己做 1.5s 节流兜底，避免连续多个
+   * AskUserQuestion 刷出一串气泡。
+   *
+   * 另注：这是 **IDE 内气泡**，不是操作系统通知中心的通知——设置项文案不应承诺后者。
+   */
+  _notifyAskUserQuestion() {
+    if (!this.askUserQuestionNotificationEnabled) return;
+    const now = Date.now();
+    if (this._lastAskNotifyAt && now - this._lastAskNotifyAt < 1500) return;
+    this._lastAskNotifyAt = now;
+    try {
+      this.hx.window.showInformationMessage('Claude 有一个问题在等你确认');
+    } catch (e) {
+      this.output.appendLine(`[perm] AskUserQuestion 提醒弹出失败: ${e && e.message}`);
+    }
+  }
+
+  _pushAskUserQuestionNotificationEnabled() {
+    this.bridge.callJs('updateAskUserQuestionNotificationEnabled', JSON.stringify({
+      askUserQuestionNotificationEnabled: !!this.askUserQuestionNotificationEnabled,
+    }));
+  }
+
+  /**
+   * 搜索 MCP marketplace。
+   *
+   * 刻意不 await：搜索会打三个外部源，最坏情况几十秒。dispatch 是消息路由的主干，
+   * 卡在这里会让同期的其它事件全部排队。改为 fire-and-forget，结果通过回调回推。
+   *
+   * **异常路径也必须回调**：前端在 finally 里 setLoading(false)，不回就是永久转圈。
+   */
+  _handleSearchMcpMarketplace(content) {
+    const req = mcpMarketplace.parseSearchRequest(content);
+    const ctx = {
+      prefDirPath: prefs.prefDir(this.hx),
+      githubToken: process.env.GITHUB_TOKEN || null,
+      warn: (msg) => this.output.appendLine(msg),
+    };
+    mcpMarketplace.search(req, ctx)
+      .then((result) => {
+        this.output.appendLine(
+          `[marketplace] 搜索完成 source=${result.sourceId} query="${result.query}" ` +
+          `结果=${result.entries.length}${result.error ? ' 部分源失败: ' + result.error : ''}`
+        );
+        this.bridge.callJs('updateMcpMarketplaceEntries', JSON.stringify(result));
+      })
+      .catch((e) => {
+        const msg = e && e.message ? e.message : String(e);
+        this.output.appendLine(`[marketplace] 搜索失败: ${msg}`);
+        this.bridge.callJs('updateMcpMarketplaceEntries', JSON.stringify({
+          query: req.query, sourceId: req.sourceId, entries: [], error: msg,
+        }));
+      });
+  }
+
+  /** 解析 Copilot 配置为导入预览。纯内存变换，不落盘——用户确认后前端逐条发 add_*_mcp_server。 */
+  _handleParseCopilotMcpConfig(content) {
+    let payload;
+    try {
+      payload = JSON.parse(content || '{}');
+    } catch (e) {
+      payload = {};
+    }
+    try {
+      const result = mcpImport.parseCopilotConfig(
+        typeof payload.json === 'string' ? payload.json : '',
+        !!payload.isCodexMode
+      );
+      this.bridge.callJs('updateCopilotImportPreview', JSON.stringify(result));
+    } catch (e) {
+      const msg = e && e.message ? e.message : String(e);
+      this.output.appendLine(`[mcp-import] 解析失败: ${msg}`);
+      // 同上：不回前端就永久 loading
+      this.bridge.callJs('updateCopilotImportPreview', JSON.stringify({ servers: [], error: msg }));
+    }
+  }
+
+  /** 全量替换某 provider 的自定义单价表。纯写入事件，前端不等回复。 */
+  _handleSetCustomModelPricing(content) {
+    let payload;
+    try {
+      payload = JSON.parse(content || '{}');
+    } catch (e) {
+      this.output.appendLine('[pricing] set_custom_model_pricing 载荷不是合法 JSON，已忽略');
+      return;
+    }
+    const provider = typeof payload.provider === 'string' ? payload.provider : '';
+    const ok = modelPricing.setCustomModelPricing(this.hx, provider, payload.models);
+    if (!ok) {
+      this.output.appendLine(`[pricing] 未知 provider: ${provider}，已忽略`);
+      return;
+    }
+    const n = Array.isArray(payload.models) ? payload.models.length : 0;
+    this.output.appendLine(`[pricing] 已保存 ${provider} 自定义单价（收到 ${n} 条）`);
+  }
+
   _readPermissionMode() {
     try {
       const v = this.hx.workspace.getConfiguration().get('ccgui.permissionMode');
@@ -1448,6 +1559,36 @@ class MessageRouter {
       case 'get_linkify_capabilities':
         this.bridge.callJs('updateLinkifyCapabilities', JSON.stringify({ classNavigationEnabled: false }));
         break;
+      // ===== B2（上游 v0.4.7）：MCP Marketplace / Copilot 导入 / 自定义单价 =====
+      // 数据源清单是硬编码的，无 I/O，同步回即可。前端另有一个伪源 'all'，只存在于 UI。
+      case 'get_mcp_marketplace_sources':
+        this.bridge.callJs('updateMcpMarketplaceSources', JSON.stringify(mcpMarketplace.getSources()));
+        break;
+      case 'search_mcp_marketplace':
+        this._handleSearchMcpMarketplace(content);
+        break;
+      case 'parse_copilot_mcp_config':
+        this._handleParseCopilotMcpConfig(content);
+        break;
+      case 'set_custom_model_pricing':
+        this._handleSetCustomModelPricing(content);
+        break;
+      case 'get_ask_user_question_notification_enabled':
+        this._pushAskUserQuestionNotificationEnabled();
+        break;
+      case 'set_ask_user_question_notification_enabled': {
+        // 字段缺失/为 null 一律按 false —— 这是 opt-in 开关，默认不打扰
+        let enabled = false;
+        try {
+          const obj = JSON.parse(content || '{}');
+          enabled = obj && obj.askUserQuestionNotificationEnabled === true;
+        } catch (e) { enabled = false; }
+        this.askUserQuestionNotificationEnabled = enabled;
+        this._persist({ askUserQuestionNotificationEnabled: enabled });
+        // set 成功后也要回显，前端据此更新开关状态（上游 handleBooleanToggle 的固定套路）
+        this._pushAskUserQuestionNotificationEnabled();
+        break;
+      }
       // ===== 用量统计面板（移植缺口修复：MVP，避免弹窗永久 loading）=====
       // 完整的历史用量/费用聚合仪表盘是移植方案 B4（TokenTracker）的范围，此处先如实
       // 回填当前能拿到的数据（会话数/项目信息），费用与逐日/逐模型聚合先留空，不编造数字。

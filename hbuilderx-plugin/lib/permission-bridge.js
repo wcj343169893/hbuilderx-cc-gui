@@ -25,10 +25,12 @@ class PermissionBridge {
   /**
    * @param {{ callJs: (fn: string, ...args: any[]) => void }} bridge
    * @param {{ appendLine: (s: string) => void }} [output]
+   * @param {{ notifyAskUserQuestion?: () => void }} [hooks] 宿主侧副作用钩子（如系统提醒气泡）
    */
-  constructor(bridge, output) {
+  constructor(bridge, output, hooks) {
     this.bridge = bridge;
     this.output = output || { appendLine() {} };
+    this.hooks = hooks || {};
     this.sessionId = crypto.randomUUID();
     this.dir = path.join(os.tmpdir(), 'ccgui-permission');
     this._timer = null;
@@ -108,6 +110,11 @@ class PermissionBridge {
       }));
     } else if (kind === 'ask') {
       this.output.appendLine(`[perm] AskUserQuestion (${requestId})`);
+      // 提醒放在推送对话框**之前**：即使 webview 此刻不可达（面板关着/正在重载），
+      // 用户也至少能收到「有个问题在等你」。对齐上游 PermissionHandler 的顺序。
+      if (typeof this.hooks.notifyAskUserQuestion === 'function') {
+        try { this.hooks.notifyAskUserQuestion(); } catch (e) { /* 提醒失败不影响对话框 */ }
+      }
       // 前端 showAskUserQuestionDialog 接收完整请求对象（含 requestId、questions）
       this.bridge.callJs('showAskUserQuestionDialog', JSON.stringify(data));
     } else if (kind === 'plan') {
