@@ -42,7 +42,7 @@ class HistoryExportService {
                 String sessionId = exportRequest.get("sessionId").getAsString();
                 String title = exportRequest.get("title").getAsString();
 
-                String rawPath = context.getProject().getBasePath();
+                String rawPath = context.resolveEffectiveWorkingDirectory();
                 String nodePath = NodeDetector.getInstance().getCachedNodePath();
                 String projectPath = NodeDetector.isWslPath(nodePath) ? NodeDetector.convertToWslPath(rawPath) : rawPath;
                 if (projectPath == null) {

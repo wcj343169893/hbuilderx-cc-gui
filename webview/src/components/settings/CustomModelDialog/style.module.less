@@ -2,6 +2,23 @@
   margin-bottom: 12px;
 }
 
+.configuredModelsSection {
+  margin-bottom: 16px;
+}
+
+.sectionHeader {
+  margin: 12px 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.sectionHint {
+  margin: 0 0 8px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
 .emptyState {
   padding: 16px;
   text-align: center;
@@ -40,6 +57,12 @@
   margin-top: 2px;
 }
 
+.modelItemPricing {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+
 .modelItemActions {
   display: flex;
   gap: 4px;
@@ -76,6 +99,42 @@
   color: var(--error-color, #f44336);
   font-size: 12px;
   margin-bottom: 8px;
+}
+
+.pricingFieldset {
+  border: 1px solid var(--border-secondary);
+  border-radius: 4px;
+  padding: 10px;
+  margin: 0 0 12px;
+}
+
+.pricingLegend {
+  padding: 0 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.pricingHint {
+  margin: 0 0 8px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.pricingGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.pricingField {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pricingField label {
+  font-size: 11px;
+  color: var(--text-secondary);
 }
 
 .formActions {

@@ -24,10 +24,14 @@ public class CodexMessageHandlerTest {
         final List<String> contentDeltas = new ArrayList<>();
         final List<String> thinkingDeltas = new ArrayList<>();
         final List<Message> lastMessages = new ArrayList<>();
+        // Records the relative order of stream-end vs message-update callbacks so a
+        // test can assert stream-end fires BEFORE the error snapshot is pushed.
+        final List<String> callOrder = new ArrayList<>();
 
         @Override
         public void onMessageUpdate(List<Message> messages) {
             messageUpdateCount++;
+            callOrder.add("messageUpdate");
             lastMessages.clear();
             lastMessages.addAll(messages);
         }
@@ -71,6 +75,7 @@ public class CodexMessageHandlerTest {
         @Override
         public void onStreamEnd() {
             streamEndCount++;
+            callOrder.add("streamEnd");
         }
 
         @Override
@@ -337,6 +342,61 @@ public class CodexMessageHandlerTest {
         handler.onMessage("message_end", "");
 
         assertEquals(1, callback.streamEndCount);
+        assertFalse(state.isBusy());
+        assertFalse(state.isLoading());
+    }
+
+    @Test
+    public void onErrorSignalsStreamEndBeforeErrorSnapshotWhileStreaming() {
+        // Regression (PR #1421 symmetric fix): the webview's onStreamEnd cancels any
+        // pending updateMessages rAF. If onError pushes the error snapshot BEFORE
+        // stream-end, that cancellation drops it and the "API request failed" bubble
+        // never renders. On a streaming turn, stream-end must fire first.
+        SessionState state = new SessionState();
+        state.setBusy(true);
+        state.setLoading(true);
+
+        CallbackHandler callbackHandler = new CallbackHandler();
+        RecordingCallback callback = new RecordingCallback();
+        callbackHandler.setCallback(callback);
+
+        CodexMessageHandler handler = new CodexMessageHandler(state, callbackHandler);
+        handler.onMessage("stream_start", "");
+        handler.onMessage("content_delta", "partial");
+
+        handler.onError("API request failed");
+
+        assertEquals(1, callback.streamEndCount);
+        int streamEndIdx = callback.callOrder.indexOf("streamEnd");
+        int lastUpdateIdx = callback.callOrder.lastIndexOf("messageUpdate");
+        assertTrue("stream-end must precede the error-snapshot message update",
+                streamEndIdx >= 0 && streamEndIdx < lastUpdateIdx);
+        assertEquals(Message.Type.ERROR,
+                callback.lastMessages.get(callback.lastMessages.size() - 1).type);
+        assertFalse(state.isBusy());
+        assertFalse(state.isLoading());
+    }
+
+    @Test
+    public void onErrorWithoutActiveStreamPushesErrorWithoutStreamEnd() {
+        // A non-streaming Codex turn maps to the webview's 'minimal' stream-end mode,
+        // which would only cancel pending updates without buying any dangling-tool
+        // cleanup — so onError intentionally does NOT emit stream-end here. The error
+        // snapshot is pushed directly and renders on its own.
+        SessionState state = new SessionState();
+        state.setBusy(true);
+        state.setLoading(true);
+
+        CallbackHandler callbackHandler = new CallbackHandler();
+        RecordingCallback callback = new RecordingCallback();
+        callbackHandler.setCallback(callback);
+
+        CodexMessageHandler handler = new CodexMessageHandler(state, callbackHandler);
+        handler.onError("API request failed");
+
+        assertEquals(0, callback.streamEndCount);
+        assertEquals(Message.Type.ERROR,
+                callback.lastMessages.get(callback.lastMessages.size() - 1).type);
         assertFalse(state.isBusy());
         assertFalse(state.isLoading());
     }

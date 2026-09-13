@@ -79,6 +79,15 @@ public class StreamMessageCoalescer {
         JBCefBrowser getBrowser();
         boolean isDisposed();
         HandlerContext getHandlerContext();
+
+        /**
+         * Fired when the stream transitions to inactive (end of a turn's
+         * streaming segment). Lets the host run work that was deferred while the
+         * stream was active — e.g. a session_updated reload held back so it does
+         * not disturb the streaming bubble or race SessionState mutations.
+         * Default no-op so existing targets need not implement it.
+         */
+        default void onStreamEnded() {}
     }
 
     public StreamMessageCoalescer(JsCallbackTarget callbackTarget) {
@@ -125,6 +134,11 @@ public class StreamMessageCoalescer {
             streamActive = false;
             lastPayloadChars = 0;  // Reset so post-stream flush uses normal interval
         }
+        // Notify the host that the stream went inactive, so it can drain work
+        // deferred during streaming (e.g. a background session_updated reload).
+        // Done outside the lock: the host may synchronously schedule EDT work,
+        // and holding `lock` across a foreign callback risks lock-ordering issues.
+        callbackTarget.onStreamEnded();
     }
 
     /**

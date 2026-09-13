@@ -159,7 +159,6 @@ public class ClaudeMessageHandler implements MessageCallback {
             return;
         }
 
-        boolean wasStreaming = isStreaming;
         isStreaming = false;
         streamEndedThisTurn = false;
         errorReportedThisTurn = true;
@@ -178,10 +177,21 @@ public class ClaudeMessageHandler implements MessageCallback {
 
         Message errorMessage = new Message(Message.Type.ERROR, error);
         state.addMessage(errorMessage);
+
+        // Signal stream-end BEFORE pushing the error snapshot, and do it
+        // unconditionally (not only when wasStreaming):
+        //  - Ordering: the webview's onStreamEnd cancels any pending
+        //    updateMessages rAF. If we pushed the error snapshot first, that
+        //    cancellation could drop it and the error would never render. Ending
+        //    the stream first lets the subsequent snapshot land normally.
+        //  - Unconditional: a non-streaming turn, or a turn that failed before
+        //    [STREAM_START], has wasStreaming=false — but its last tool_use may
+        //    still be unresolved. onStreamEnd is what marks dangling tool_use as
+        //    denied, so skipping it leaves the tool card spinning forever. The
+        //    webview side treats a no-active-stream onStreamEnd as exactly this
+        //    finalize-only case.
+        callbackHandler.notifyStreamEnd();
         callbackHandler.notifyMessageUpdate(state.getMessages());
-        if (wasStreaming) {
-            callbackHandler.notifyStreamEnd();
-        }
         callbackHandler.notifyStateChange(state.isBusy(), state.isLoading(), state.getError());
 
         // Show error in status bar

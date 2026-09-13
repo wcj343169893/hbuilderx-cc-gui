@@ -224,12 +224,20 @@ public final class WslPathUtil {
         return cachedWslHomeUncPath;
     }
 
-    /** Returns the WSL home (forward-slash UNC) when {@code nodePath} is a WSL binary, otherwise the native OS home. */
+    /** Returns the WSL home (backslash UNC, e.g. {@code \\wsl.localhost\Ubuntu\home\x}) when {@code nodePath} is a WSL binary, otherwise the native OS home. */
     public static String resolveHomeForFileOps(String nodePath) {
         if (isWslPath(nodePath)) {
             String wslHomeUnc = resolveWslHomeUncPath();
             if (wslHomeUnc != null && !wslHomeUnc.isEmpty()) {
-                return wslHomeUnc.replace('\\', '/');
+                // Must stay in the canonical backslash UNC form. Java's Windows path parser
+                // mis-handles the forward-slash form (//wsl.localhost/...) when fed to
+                // Paths.get(...).toAbsolutePath(): the leading // collapses and the path
+                // resolves drive-relative (C:\wsl.localhost\...), so Files.isRegularFile /
+                // File.listFiles silently return false and every ~/.claude scan comes back
+                // empty. Do NOT "normalize" this to forward slashes. convertToWslPath()
+                // accepts both slash forms, so callers that re-convert (e.g.
+                // EnvironmentConfigurator building the HOME env var) stay correct.
+                return wslHomeUnc;
             }
         }
         return PlatformUtils.getHomeDirectory();

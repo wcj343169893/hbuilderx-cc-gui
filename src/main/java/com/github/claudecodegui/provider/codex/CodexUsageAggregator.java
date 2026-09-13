@@ -1,5 +1,6 @@
 package com.github.claudecodegui.provider.codex;
 
+import com.github.claudecodegui.provider.CustomPricingProvider;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.intellij.openapi.diagnostic.Logger;
@@ -279,7 +280,34 @@ class CodexUsageAggregator {
     }
 
     private Pricing resolvePricing(String model) {
-        return MODEL_PRICING.getOrDefault(normalizeModel(model), DEFAULT_PRICING);
+        // User-configured pricing takes precedence over the hardcoded table. It is used for
+        // plugin-level custom models and for pricing-only Claude mapped model entries. Cache
+        // is mtime-invalidated automatically.
+        Pricing builtin = MODEL_PRICING.getOrDefault(normalizeModel(model), null);
+        Pricing customPricing = resolveCustomPricing(model, builtin);
+        if (customPricing != null) {
+            return customPricing;
+        }
+        return builtin != null ? builtin : DEFAULT_PRICING;
+    }
+
+    /**
+     * Build a {@link Pricing} from user-configured pricing, or {@code null} if the model has no
+     * configured pricing. Unspecified dimensions fall back to the overridden model's OWN built-in
+     * rate when it is a known model, otherwise 0 — never the generic default model's rate, which
+     * previously turned a partial custom price (e.g. only input set) into a large over-estimate
+     * for the unspecified dimensions.
+     */
+    private static Pricing resolveCustomPricing(String model, Pricing builtin) {
+        if (model == null || model.isBlank()) {
+            return null;
+        }
+        return CustomPricingProvider.getInstance().getPricing("codex", model)
+                .map(p -> new Pricing(
+                        p.inputCostPer1M() != null ? p.inputCostPer1M() : (builtin != null ? builtin.inputCostPer1M : 0.0),
+                        p.outputCostPer1M() != null ? p.outputCostPer1M() : (builtin != null ? builtin.outputCostPer1M : 0.0),
+                        p.cacheReadCostPer1M() != null ? p.cacheReadCostPer1M() : (builtin != null ? builtin.cacheReadCostPer1M : 0.0)))
+                .orElse(null);
     }
 
     private String normalizeModel(String model) {

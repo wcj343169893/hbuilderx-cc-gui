@@ -179,7 +179,7 @@ class HistoryDeleteService {
             return new DeleteResult(deleteCodexSession(sessionId), 0);
         }
 
-        String rawPath = context.getProject().getBasePath();
+        String rawPath = context.resolveEffectiveWorkingDirectory();
         String nodePath = NodeDetector.getInstance().getCachedNodePath();
         String projectPath = NodeDetector.isWslPath(nodePath) ? NodeDetector.convertToWslPath(rawPath) : rawPath;
         if (projectPath == null) {
@@ -301,7 +301,7 @@ class HistoryDeleteService {
 
     private void cleanupCache(String currentProvider) {
         try {
-            String rawPath2 = context.getProject().getBasePath();
+            String rawPath2 = context.resolveEffectiveWorkingDirectory();
             String nodePath2 = NodeDetector.getInstance().getCachedNodePath();
             String projectPath = NodeDetector.isWslPath(nodePath2) ? NodeDetector.convertToWslPath(rawPath2) : rawPath2;
             if ("codex".equals(currentProvider)) {

@@ -144,6 +144,24 @@ export function collectUnresolvedToolUseIds(
 const STREAM_STALL_TIMEOUT_MS = 60_000;
 const STREAM_STALL_CHECK_INTERVAL_MS = 5_000;
 
+/**
+ * Whether a streaming assistant bubble has any renderable content yet.
+ * An empty bubble (no text, no raw blocks) is an unfilled placeholder that can
+ * be safely reused for a new turn instead of being left behind as a ghost.
+ */
+function streamingBubbleHasContent(message: ClaudeMessage): boolean {
+  if (typeof message.content === 'string' && message.content.trim().length > 0) {
+    return true;
+  }
+  const raw = message.raw;
+  if (raw && typeof raw === 'object') {
+    const content = (raw as { message?: { content?: unknown }; content?: unknown }).message?.content
+      ?? (raw as { content?: unknown }).content;
+    if (Array.isArray(content) && content.length > 0) return true;
+  }
+  return false;
+}
+
 // Helper to measure total text length from raw blocks (for comparing completeness).
 // Handles both object and JSON string formats of raw.
 type TextBlock = { type: 'text'; text: string };
@@ -280,6 +298,50 @@ export function registerStreamingCallbacks(options: UseWindowCallbacksOptions): 
         };
         return updated;
       }
+      // If the last streaming assistant belongs to an OLDER turn, its onStreamEnd
+      // was likely dropped (e.g., JCEF async chain breakage). Handle it so new
+      // deltas land on a fresh bubble rather than appending to the previous
+      // turn's message. This must stay BELOW the replay branch: a replay start
+      // reuses the last assistant bubble, and finalizing it here instead would
+      // strand the replayed turn's earlier content in a duplicate bubble.
+      if (last?.type === 'assistant' && last?.isStreaming) {
+        const lastTurnId = (last as { __turnId?: number }).__turnId;
+        const currentTurnId = streamingTurnIdRef.current;
+        if (typeof lastTurnId === 'number' && lastTurnId > 0 && lastTurnId < currentTurnId) {
+          // An EMPTY older streaming bubble is an unfilled placeholder — a
+          // duplicate/redundant STREAM_START, or a start that produced no deltas
+          // before the next one. Reuse it for this turn instead of finalizing it
+          // and appending a second bubble, which would leave a blank ghost behind
+          // (and, once the real content lands, read as a duplicated response).
+          if (!streamingBubbleHasContent(last)) {
+            const reused = [...prev];
+            reused[prev.length - 1] = {
+              ...last,
+              content: '',
+              isStreaming: true,
+              timestamp: new Date().toISOString(),
+              __turnId: currentTurnId,
+            };
+            streamingMessageIndexRef.current = prev.length - 1;
+            return reused;
+          }
+          // A non-empty older bubble carries real content from a turn whose
+          // stream-end was lost — finalize it and open a fresh bubble.
+          const finalized = [...prev];
+          finalized[prev.length - 1] = { ...last, isStreaming: false };
+          streamingMessageIndexRef.current = finalized.length;
+          return [
+            ...finalized,
+            {
+              type: 'assistant',
+              content: '',
+              isStreaming: true,
+              timestamp: new Date().toISOString(),
+              __turnId: currentTurnId,
+            },
+          ];
+        }
+      }
       streamingMessageIndexRef.current = prev.length;
       return [
         ...prev,
@@ -357,6 +419,30 @@ export function registerStreamingCallbacks(options: UseWindowCallbacksOptions): 
     scheduleThinkingRaf();
   };
 
+  // Mark any tool_use block that never received a tool_result as denied, so its
+  // card stops spinning. Runs against the current message list; a no-op on a
+  // fully-resolved turn. Used both on normal stream end and on the turn-ended-
+  // without-a-stream paths (errors, non-streaming turns) so a failed turn never
+  // leaves the agent's last tool hanging forever.
+  const finalizeUnresolvedToolUses = () => {
+    if (!window.__deniedToolIds) {
+      window.__deniedToolIds = new Set<string>();
+    }
+    setMessages((currentMessages) => {
+      try {
+        const interruptedIds = collectUnresolvedToolUseIds(currentMessages);
+        if (interruptedIds.length === 0) return currentMessages;
+        const denied = window.__deniedToolIds!;
+        for (const id of interruptedIds) denied.add(id);
+        // New array ref so the now-denied tool cards re-render out of "pending".
+        return [...currentMessages];
+      } catch (error) {
+        console.error('[Frontend] Failed to finalize unresolved tool ids:', error);
+        return currentMessages;
+      }
+    });
+  };
+
   window.onStreamEnd = (sequence?: string | number) => {
     if (window.__sessionTransitioning) return;
 
@@ -379,7 +465,13 @@ export function registerStreamingCallbacks(options: UseWindowCallbacksOptions): 
       return;
     }
     if (handlingMode === 'skip') {
-      // Streaming refs already cleared by a previous onStreamEnd — nothing to do
+      // No active stream to finalize (refs already cleared by a prior
+      // onStreamEnd, OR the turn never streamed — a non-streaming turn or one
+      // that failed before [STREAM_START]). Either way, still mark any dangling
+      // tool_use as denied: on an errored/aborted turn the tool_result never
+      // arrives, and without this the last tool card spins forever. Idempotent
+      // (a no-op when everything is already resolved or already denied).
+      finalizeUnresolvedToolUses();
       return;
     }
 

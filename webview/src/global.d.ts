@@ -244,6 +244,21 @@ interface Window {
   onFileListResult?: (json: string) => void;
 
   /**
+   * Update MCP marketplace sources.
+   */
+  updateMcpMarketplaceSources?: (json: string) => void;
+
+  /**
+   * Update MCP marketplace entries.
+   */
+  updateMcpMarketplaceEntries?: (json: string) => void;
+
+  /**
+   * Preview of MCP servers parsed from an external (e.g. GitHub Copilot) configuration.
+   */
+  updateCopilotImportPreview?: (json: string) => void;
+
+  /**
    * Update MCP servers list
    */
   updateMcpServers?: (json: string) => void;
@@ -356,6 +371,11 @@ interface Window {
    * Update task completion notification enabled state
    */
   updateTaskCompletionNotificationEnabled?: (json: string) => void;
+
+  /**
+   * Update AskUserQuestion reminder notification enabled state
+   */
+  updateAskUserQuestionNotificationEnabled?: (json: string) => void;
 
   /**
    * Update permission dialog timeout setting

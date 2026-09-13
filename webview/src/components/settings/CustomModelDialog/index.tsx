@@ -1,18 +1,64 @@
 import { useState, useCallback, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { CodexCustomModel } from '../../../types/provider';
+import type { CodexCustomModel, ModelPricing } from '../../../types/provider';
 // Model ID format is intentionally not restricted — see isValidModelId() JSDoc for rationale
 import styles from './style.module.less';
 
-const DIALOG_STYLE: React.CSSProperties = { maxWidth: '500px' };
+const DIALOG_STYLE: React.CSSProperties = { maxWidth: '640px' };
 const FLEX_1_STYLE: React.CSSProperties = { flex: 1 };
 const DESC_INPUT_STYLE: React.CSSProperties = { width: '100%', marginBottom: '8px' };
 const ADD_ICON_STYLE: React.CSSProperties = { marginRight: '4px' };
+
+type PricingFieldKey = keyof ModelPricing;
+
+interface PricingFieldConfig {
+  key: PricingFieldKey;
+  labelKey: string;
+  shortLabelKey: string;
+  placeholder: string;
+}
+
+const PRICING_FIELDS: PricingFieldConfig[] = [
+  {
+    key: 'inputCostPer1M',
+    labelKey: 'settings.pluginModels.pricing.inputLabel',
+    shortLabelKey: 'settings.pluginModels.pricing.inputShort',
+    placeholder: '3.00',
+  },
+  {
+    key: 'outputCostPer1M',
+    labelKey: 'settings.pluginModels.pricing.outputLabel',
+    shortLabelKey: 'settings.pluginModels.pricing.outputShort',
+    placeholder: '15.00',
+  },
+  {
+    key: 'cacheWriteCostPer1M',
+    labelKey: 'settings.pluginModels.pricing.cacheWriteLabel',
+    shortLabelKey: 'settings.pluginModels.pricing.cacheWriteShort',
+    placeholder: '3.75',
+  },
+  {
+    key: 'cacheReadCostPer1M',
+    labelKey: 'settings.pluginModels.pricing.cacheReadLabel',
+    shortLabelKey: 'settings.pluginModels.pricing.cacheReadShort',
+    placeholder: '0.30',
+  },
+];
+
+const EMPTY_PRICING_INPUTS: Record<PricingFieldKey, string> = {
+  inputCostPer1M: '',
+  outputCostPer1M: '',
+  cacheWriteCostPer1M: '',
+  cacheReadCostPer1M: '',
+};
 
 interface CustomModelDialogProps {
   isOpen: boolean;
   models: CodexCustomModel[];
   onModelsChange: (models: CodexCustomModel[]) => void;
+  /** Models from Claude provider/settings mappings. They are already selectable; only pricing is editable here. */
+  configuredModels?: CodexCustomModel[];
+  onConfiguredModelPricingChange?: (modelId: string, pricing?: ModelPricing) => void;
   onClose: () => void;
   /** If provided, opens in add-model mode directly */
   initialAddMode?: boolean;
@@ -29,6 +75,42 @@ function sanitizeInput(value: string): string {
     .replace(/\s+/g, ' ');
 }
 
+function parsePricingInput(value: string): number | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  return Number(trimmed);
+}
+
+function isInvalidPricingValue(value: string): boolean {
+  const parsed = parsePricingInput(value);
+  return parsed !== undefined && (!Number.isFinite(parsed) || parsed < 0);
+}
+
+function hasPricing(pricing?: ModelPricing): boolean {
+  return !!pricing && PRICING_FIELDS.some(({ key }) => pricing[key] !== undefined);
+}
+
+function formatPricingValue(value: number | undefined): string {
+  return value === undefined ? '' : String(value);
+}
+
+function buildPricing(inputs: Record<PricingFieldKey, string>): ModelPricing | undefined {
+  const pricing = PRICING_FIELDS.reduce<ModelPricing>((acc, { key }) => {
+    const parsed = parsePricingInput(inputs[key]);
+    if (parsed === undefined || !Number.isFinite(parsed) || parsed < 0) {
+      return acc;
+    }
+    return {
+      ...acc,
+      [key]: parsed,
+    };
+  }, {});
+
+  return hasPricing(pricing) ? pricing : undefined;
+}
+
 /**
  * Custom Model Management Dialog
  * Full CRUD for plugin-level custom models in a modal dialog
@@ -37,6 +119,8 @@ export function CustomModelDialog({
   isOpen,
   models,
   onModelsChange,
+  configuredModels = [],
+  onConfiguredModelPricingChange,
   onClose,
   initialAddMode = false,
 }: CustomModelDialogProps) {
@@ -45,34 +129,40 @@ export function CustomModelDialog({
   // Form state
   const [isAdding, setIsAdding] = useState(false);
   const [editingModel, setEditingModel] = useState<CodexCustomModel | null>(null);
+  const [editingConfiguredModel, setEditingConfiguredModel] = useState<CodexCustomModel | null>(null);
   const [newModelId, setNewModelId] = useState('');
   const [newModelLabel, setNewModelLabel] = useState('');
   const [newModelDesc, setNewModelDesc] = useState('');
-  const [validationError, setValidationError] = useState<string | null>(null);
+  const [newPricingInputs, setNewPricingInputs] = useState<Record<PricingFieldKey, string>>({ ...EMPTY_PRICING_INPUTS });
+  const [modelIdError, setModelIdError] = useState<string | null>(null);
+  const [pricingError, setPricingError] = useState<string | null>(null);
+
+  const resetForm = useCallback(() => {
+    setIsAdding(false);
+    setEditingModel(null);
+    setEditingConfiguredModel(null);
+    setNewModelId('');
+    setNewModelLabel('');
+    setNewModelDesc('');
+    setNewPricingInputs({ ...EMPTY_PRICING_INPUTS });
+    setModelIdError(null);
+    setPricingError(null);
+  }, []);
 
   // Auto-open add form when initialAddMode is true
   useEffect(() => {
     if (isOpen && initialAddMode) {
+      resetForm();
       setIsAdding(true);
-      setEditingModel(null);
-      setNewModelId('');
-      setNewModelLabel('');
-      setNewModelDesc('');
-      setValidationError(null);
     }
-  }, [isOpen, initialAddMode]);
+  }, [isOpen, initialAddMode, resetForm]);
 
   // Reset form state when dialog closes
   useEffect(() => {
     if (!isOpen) {
-      setIsAdding(false);
-      setEditingModel(null);
-      setNewModelId('');
-      setNewModelLabel('');
-      setNewModelDesc('');
-      setValidationError(null);
+      resetForm();
     }
-  }, [isOpen]);
+  }, [isOpen, resetForm]);
 
   // ESC key handler
   useEffect(() => {
@@ -87,7 +177,7 @@ export function CustomModelDialog({
   }, [isOpen, onClose]);
 
   const validateModelId = useCallback((id: string): string | null => {
-    const trimmedId = id.trim();
+    const trimmedId = sanitizeInput(id).trim();
     if (!trimmedId || trimmedId.length > 256) {
       return t('settings.codexProvider.dialog.modelIdRequired') || 'Model ID is required';
     }
@@ -100,58 +190,119 @@ export function CustomModelDialog({
     return null;
   }, [models, editingModel, t]);
 
+  const validatePricingInputs = useCallback((): string | null => {
+    const hasInvalidPrice = PRICING_FIELDS.some(({ key }) => isInvalidPricingValue(newPricingInputs[key]));
+    if (!hasInvalidPrice) {
+      return null;
+    }
+    return t('settings.pluginModels.pricing.invalidValue', {
+      defaultValue: 'Pricing must be a non-negative number',
+    });
+  }, [newPricingInputs, t]);
+
+  const buildModelFromForm = useCallback((): CodexCustomModel => {
+    const sanitizedId = sanitizeInput(newModelId).trim();
+    const sanitizedLabel = sanitizeInput(newModelLabel).trim();
+    const sanitizedDescription = sanitizeInput(newModelDesc).trim();
+    const pricing = buildPricing(newPricingInputs);
+    const model: CodexCustomModel = {
+      id: sanitizedId,
+      label: sanitizedLabel || sanitizedId,
+      description: sanitizedDescription || undefined,
+    };
+
+    return pricing ? { ...model, pricing } : model;
+  }, [newModelId, newModelLabel, newModelDesc, newPricingInputs]);
+
+  const validateForm = useCallback((): boolean => {
+    if (editingConfiguredModel) {
+      const priceError = validatePricingInputs();
+      if (priceError) {
+        setModelIdError(null);
+        setPricingError(priceError);
+        return false;
+      }
+      setModelIdError(null);
+      setPricingError(null);
+      return true;
+    }
+
+    const idError = validateModelId(newModelId);
+    if (idError) {
+      setModelIdError(idError);
+      setPricingError(null);
+      return false;
+    }
+
+    const priceError = validatePricingInputs();
+    if (priceError) {
+      setModelIdError(null);
+      setPricingError(priceError);
+      return false;
+    }
+
+    setModelIdError(null);
+    setPricingError(null);
+    return true;
+  }, [editingConfiguredModel, newModelId, validateModelId, validatePricingInputs]);
+
   const handleAddModel = useCallback(() => {
-    const error = validateModelId(newModelId);
-    if (error) {
-      setValidationError(error);
+    if (!validateForm()) {
       return;
     }
-    const newModel: CodexCustomModel = {
-      id: sanitizeInput(newModelId).trim(),
-      label: sanitizeInput(newModelLabel).trim() || sanitizeInput(newModelId).trim(),
-      description: sanitizeInput(newModelDesc).trim() || undefined,
-    };
-    onModelsChange([...models, newModel]);
-    setNewModelId('');
-    setNewModelLabel('');
-    setNewModelDesc('');
-    setIsAdding(false);
-    setValidationError(null);
-  }, [models, newModelId, newModelLabel, newModelDesc, onModelsChange, validateModelId]);
+
+    onModelsChange([...models, buildModelFromForm()]);
+    resetForm();
+  }, [models, onModelsChange, buildModelFromForm, resetForm, validateForm]);
 
   const handleSaveEdit = useCallback(() => {
-    if (!editingModel) return;
-    const error = validateModelId(newModelId);
-    if (error) {
-      setValidationError(error);
-      return;
-    }
-    const updatedModels = models.map(m => {
-      if (m.id === editingModel.id) {
-        return {
-          id: sanitizeInput(newModelId).trim(),
-          label: sanitizeInput(newModelLabel).trim() || sanitizeInput(newModelId).trim(),
-          description: sanitizeInput(newModelDesc).trim() || undefined,
-        };
-      }
-      return m;
-    });
+    if (!editingModel || !validateForm()) return;
+
+    const updatedModel = buildModelFromForm();
+    const updatedModels = models.map(m => (m.id === editingModel.id ? updatedModel : m));
     onModelsChange(updatedModels);
-    setEditingModel(null);
-    setNewModelId('');
-    setNewModelLabel('');
-    setNewModelDesc('');
-    setIsAdding(false);
-    setValidationError(null);
-  }, [models, editingModel, newModelId, newModelLabel, newModelDesc, onModelsChange, validateModelId]);
+    resetForm();
+  }, [models, editingModel, onModelsChange, buildModelFromForm, resetForm, validateForm]);
+
+  const handleSaveConfiguredPricing = useCallback(() => {
+    if (!editingConfiguredModel || !validateForm()) return;
+
+    onConfiguredModelPricingChange?.(editingConfiguredModel.id, buildPricing(newPricingInputs));
+    resetForm();
+  }, [editingConfiguredModel, newPricingInputs, onConfiguredModelPricingChange, resetForm, validateForm]);
 
   const handleEditModel = useCallback((model: CodexCustomModel) => {
+    setEditingConfiguredModel(null);
     setEditingModel(model);
     setNewModelId(model.id);
     setNewModelLabel(model.label);
     setNewModelDesc(model.description || '');
+    setNewPricingInputs({
+      inputCostPer1M: formatPricingValue(model.pricing?.inputCostPer1M),
+      outputCostPer1M: formatPricingValue(model.pricing?.outputCostPer1M),
+      cacheWriteCostPer1M: formatPricingValue(model.pricing?.cacheWriteCostPer1M),
+      cacheReadCostPer1M: formatPricingValue(model.pricing?.cacheReadCostPer1M),
+    });
     setIsAdding(true);
-    setValidationError(null);
+    setModelIdError(null);
+    setPricingError(null);
+  }, []);
+
+  const handleEditConfiguredModelPricing = useCallback((model: CodexCustomModel) => {
+    setEditingModel(null);
+    setEditingConfiguredModel(model);
+    setNewModelId(model.id);
+    setNewModelLabel(model.label || model.id);
+    setNewModelDesc(model.description || '');
+    setNewPricingInputs({
+      inputCostPer1M: formatPricingValue(model.pricing?.inputCostPer1M),
+      outputCostPer1M: formatPricingValue(model.pricing?.outputCostPer1M),
+      cacheWriteCostPer1M: formatPricingValue(model.pricing?.cacheWriteCostPer1M),
+      cacheReadCostPer1M: formatPricingValue(model.pricing?.cacheReadCostPer1M),
+    });
+    setIsAdding(true);
+    setModelIdError(null);
+    setPricingError(null);
   }, []);
 
   const handleRemoveModel = useCallback((id: string) => {
@@ -159,13 +310,23 @@ export function CustomModelDialog({
   }, [models, onModelsChange]);
 
   const handleCancelEdit = useCallback(() => {
-    setEditingModel(null);
-    setNewModelId('');
-    setNewModelLabel('');
-    setNewModelDesc('');
-    setIsAdding(false);
-    setValidationError(null);
-  }, []);
+    resetForm();
+  }, [resetForm]);
+
+  const getPricingSummary = useCallback((pricing?: ModelPricing): string => {
+    if (!hasPricing(pricing)) {
+      return '';
+    }
+    return PRICING_FIELDS
+      .flatMap(({ key, shortLabelKey }) => {
+        const value = pricing?.[key];
+        return value === undefined ? [] : [`${t(shortLabelKey)} $${value}/1M`];
+      })
+      .join(' | ');
+  }, [t]);
+
+  const isEditingConfiguredModel = !!editingConfiguredModel;
+  const isEditingAnyModel = !!editingModel || isEditingConfiguredModel;
 
   if (!isOpen) return null;
 
@@ -174,7 +335,7 @@ export function CustomModelDialog({
       <div className="dialog provider-dialog" style={DIALOG_STYLE}>
         <div className="dialog-header">
           <h3>{t('settings.pluginModels.dialogTitle')}</h3>
-          <button className="close-btn" onClick={onClose} title={t('common.close')}>
+          <button type="button" className="close-btn" onClick={onClose} title={t('common.close')}>
             <span className="codicon codicon-close" />
           </button>
         </div>
@@ -182,56 +343,116 @@ export function CustomModelDialog({
         <div className="dialog-body">
           <p className="dialog-desc">{t('settings.pluginModels.description')}</p>
 
-          {/* Model list */}
-          <div className={styles.modelList} role="list" aria-label={t('settings.pluginModels.dialogTitle')}>
-            {models.length === 0 && !isAdding ? (
-              <div className={styles.emptyState} role="status">
-                {t('settings.codexProvider.dialog.noCustomModels')}
-              </div>
-            ) : (
-              models.map((model) => (
-                <div key={model.id} className={styles.modelItem} role="listitem">
-                  <div className={styles.modelItemContent}>
-                    <div className={styles.modelItemId}>{model.id}</div>
-                    {model.label !== model.id && (
-                      <span className={styles.modelItemLabel}>
-                        ({model.label})
-                      </span>
-                    )}
-                    {model.description && (
-                      <div className={styles.modelItemDesc}>
-                        {model.description}
+          {configuredModels.length > 0 && (
+            <section className={styles.configuredModelsSection} aria-labelledby="configured-models-heading">
+              <h4 id="configured-models-heading" className={styles.sectionHeader}>
+                {t('settings.pluginModels.configuredSectionTitle')}
+              </h4>
+              <p className={styles.sectionHint}>
+                {t('settings.pluginModels.configuredSectionDesc')}
+              </p>
+              <div className={styles.modelList} role="list" aria-label={t('settings.pluginModels.configuredSectionTitle')}>
+                {configuredModels.map((model) => (
+                  <div key={model.id} className={styles.modelItem} role="listitem">
+                    <div className={styles.modelItemContent}>
+                      <div className={styles.modelItemId}>{model.id}</div>
+                      {model.label && model.label !== model.id && (
+                        <span className={styles.modelItemLabel}>
+                          ({model.label})
+                        </span>
+                      )}
+                      {model.description && (
+                        <div className={styles.modelItemDesc}>
+                          {model.description}
+                        </div>
+                      )}
+                      <div className={styles.modelItemPricing}>
+                        {hasPricing(model.pricing)
+                          ? getPricingSummary(model.pricing)
+                          : t('settings.pluginModels.pricing.defaultPricing')}
                       </div>
-                    )}
+                    </div>
+                    <div className={styles.modelItemActions}>
+                      <button
+                        type="button"
+                        className={styles.iconBtn}
+                        onClick={() => handleEditConfiguredModelPricing(model)}
+                        title={t('settings.pluginModels.editPricing')}
+                        aria-label={`${t('settings.pluginModels.editPricing')} ${model.id}`}
+                      >
+                        <span className="codicon codicon-edit" aria-hidden="true" />
+                      </button>
+                    </div>
                   </div>
-                  <div className={styles.modelItemActions}>
-                    <button
-                      type="button"
-                      className={styles.iconBtn}
-                      onClick={() => handleEditModel(model)}
-                      title={t('common.edit')}
-                      aria-label={`${t('common.edit')} ${model.id}`}
-                    >
-                      <span className="codicon codicon-edit" aria-hidden="true" />
-                    </button>
-                    <button
-                      type="button"
-                      className={styles.iconBtnDanger}
-                      onClick={() => handleRemoveModel(model.id)}
-                      title={t('common.delete')}
-                      aria-label={`${t('common.delete')} ${model.id}`}
-                    >
-                      <span className="codicon codicon-trash" aria-hidden="true" />
-                    </button>
-                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          <section aria-labelledby="custom-models-heading">
+            <h4 id="custom-models-heading" className={styles.sectionHeader}>
+              {t('settings.pluginModels.customSectionTitle')}
+            </h4>
+            <div className={styles.modelList} role="list" aria-label={t('settings.pluginModels.customSectionTitle')}>
+              {models.length === 0 && !isAdding ? (
+                <div className={styles.emptyState} role="status">
+                  {t('settings.codexProvider.dialog.noCustomModels')}
                 </div>
-              ))
-            )}
-          </div>
+              ) : (
+                models.map((model) => (
+                  <div key={model.id} className={styles.modelItem} role="listitem">
+                    <div className={styles.modelItemContent}>
+                      <div className={styles.modelItemId}>{model.id}</div>
+                      {model.label !== model.id && (
+                        <span className={styles.modelItemLabel}>
+                          ({model.label})
+                        </span>
+                      )}
+                      {model.description && (
+                        <div className={styles.modelItemDesc}>
+                          {model.description}
+                        </div>
+                      )}
+                      {hasPricing(model.pricing) && (
+                        <div className={styles.modelItemPricing}>
+                          {getPricingSummary(model.pricing)}
+                        </div>
+                      )}
+                    </div>
+                    <div className={styles.modelItemActions}>
+                      <button
+                        type="button"
+                        className={styles.iconBtn}
+                        onClick={() => handleEditModel(model)}
+                        title={t('common.edit')}
+                        aria-label={`${t('common.edit')} ${model.id}`}
+                      >
+                        <span className="codicon codicon-edit" aria-hidden="true" />
+                      </button>
+                      <button
+                        type="button"
+                        className={styles.iconBtnDanger}
+                        onClick={() => handleRemoveModel(model.id)}
+                        title={t('common.delete')}
+                        aria-label={`${t('common.delete')} ${model.id}`}
+                      >
+                        <span className="codicon codicon-trash" aria-hidden="true" />
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </section>
 
           {/* Add/edit form */}
           {isAdding ? (
-            <div className={styles.addEditForm} role="form" aria-label={editingModel ? t('common.edit') : t('common.add')}>
+            <div className={styles.addEditForm} role="form" aria-label={isEditingAnyModel ? t('common.edit') : t('common.add')}>
+              {isEditingConfiguredModel && (
+                <p className={styles.sectionHint}>
+                  {t('settings.pluginModels.configuredEditHint')}
+                </p>
+              )}
               <div className={styles.formRow}>
                 <label htmlFor="model-id-input" className="sr-only">
                   {t('settings.codexProvider.dialog.modelIdPlaceholder')}
@@ -239,14 +460,15 @@ export function CustomModelDialog({
                 <input
                   id="model-id-input"
                   type="text"
-                  className={`form-input ${validationError ? 'input-error' : ''}`}
+                  className={`form-input ${modelIdError ? 'input-error' : ''}`}
                   placeholder={t('settings.codexProvider.dialog.modelIdPlaceholder')}
                   value={newModelId}
-                  onChange={(e) => { setNewModelId(e.target.value); if (validationError) setValidationError(null); }}
+                  onChange={(e) => { setNewModelId(e.target.value); if (modelIdError) setModelIdError(null); }}
                   style={FLEX_1_STYLE}
-                  autoFocus
-                  aria-invalid={!!validationError}
-                  aria-describedby={validationError ? 'model-id-error' : undefined}
+                  autoFocus={!isEditingConfiguredModel}
+                  disabled={isEditingConfiguredModel}
+                  aria-invalid={!!modelIdError}
+                  aria-describedby={modelIdError ? 'model-id-error' : undefined}
                 />
                 <label htmlFor="model-label-input" className="sr-only">
                   {t('settings.codexProvider.dialog.modelLabelPlaceholder')}
@@ -259,11 +481,12 @@ export function CustomModelDialog({
                   value={newModelLabel}
                   onChange={(e) => setNewModelLabel(e.target.value)}
                   style={FLEX_1_STYLE}
+                  disabled={isEditingConfiguredModel}
                 />
               </div>
-              {validationError && (
+              {modelIdError && (
                 <div id="model-id-error" className={styles.validationError} role="alert">
-                  {validationError}
+                  {modelIdError}
                 </div>
               )}
               <label htmlFor="model-desc-input" className="sr-only">
@@ -277,17 +500,61 @@ export function CustomModelDialog({
                 value={newModelDesc}
                 onChange={(e) => setNewModelDesc(e.target.value)}
                 style={DESC_INPUT_STYLE}
+                disabled={isEditingConfiguredModel}
               />
+
+              <fieldset className={styles.pricingFieldset}>
+                <legend className={styles.pricingLegend}>{t('settings.pluginModels.pricing.title')}</legend>
+                <p id="model-pricing-hint" className={styles.pricingHint}>
+                  {t('settings.pluginModels.pricing.hint')}
+                </p>
+                <div className={styles.pricingGrid}>
+                  {PRICING_FIELDS.map((field) => {
+                    const value = newPricingInputs[field.key];
+                    const invalid = isInvalidPricingValue(value);
+                    return (
+                      <div key={field.key} className={styles.pricingField}>
+                        <label htmlFor={`model-pricing-${field.key}`}>
+                          {t(field.labelKey)}
+                        </label>
+                        <input
+                          id={`model-pricing-${field.key}`}
+                          type="number"
+                          min="0"
+                          step="0.000001"
+                          inputMode="decimal"
+                          className={`form-input ${invalid ? 'input-error' : ''}`}
+                          placeholder={field.placeholder}
+                          value={value}
+                          onChange={(e) => {
+                            setNewPricingInputs(prev => ({ ...prev, [field.key]: e.target.value }));
+                            if (pricingError) setPricingError(null);
+                          }}
+                          aria-invalid={invalid}
+                          aria-describedby={pricingError ? 'model-pricing-hint model-pricing-error' : 'model-pricing-hint'}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+                {pricingError && (
+                  <div id="model-pricing-error" className={styles.validationError} role="alert">
+                    {pricingError}
+                  </div>
+                )}
+              </fieldset>
+
               <div className={styles.formActions}>
-                <button className="btn btn-secondary btn-sm" onClick={handleCancelEdit}>
+                <button type="button" className="btn btn-secondary btn-sm" onClick={handleCancelEdit}>
                   {t('common.cancel')}
                 </button>
                 <button
+                  type="button"
                   className="btn btn-primary btn-sm"
-                  onClick={editingModel ? handleSaveEdit : handleAddModel}
+                  onClick={isEditingConfiguredModel ? handleSaveConfiguredPricing : editingModel ? handleSaveEdit : handleAddModel}
                   disabled={!newModelId.trim()}
                 >
-                  {editingModel ? t('common.save') : t('common.add')}
+                  {isEditingAnyModel ? t('common.save') : t('common.add')}
                 </button>
               </div>
             </div>
@@ -307,7 +574,7 @@ export function CustomModelDialog({
         <div className="dialog-footer">
           <div className={styles.dialogFooterSpacer} />
           <div className="footer-actions">
-            <button className="btn btn-primary" onClick={onClose}>
+            <button type="button" className="btn btn-primary" onClick={onClose}>
               {t('common.close')}
             </button>
           </div>

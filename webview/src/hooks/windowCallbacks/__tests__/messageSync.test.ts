@@ -366,10 +366,12 @@ describe('appendOptimisticMessageIfMissing', () => {
     expect(hasAttachment).toBe(true);
   });
 
-  it('does not append optimistic message when it is newer than everything in nextList (stale update)', () => {
-    // Simulates race condition: a stale backend update (from compaction)
-    // arrives after the user has already sent a new optimistic message.
-    // The stale update's newest timestamp is before the optimistic message.
+  it('keeps the optimistic user message when a lagging snapshot omits it entirely', () => {
+    // Regression for "my message disappears but the agent answers it": a snapshot
+    // (e.g. a background session_updated reload) arrives that does NOT yet contain
+    // the just-sent user message — every message in it predates the send. The
+    // optimistic bubble must be KEPT (not dropped) so the user still sees what
+    // they sent; a later snapshot containing the persisted message replaces it.
     const optimisticTime = Date.now();
     const staleTime = optimisticTime - 10000; // 10 seconds older
 
@@ -385,9 +387,10 @@ describe('appendOptimisticMessageIfMissing', () => {
     const next: ClaudeMessage[] = [staleAssistant];
 
     const result = appendOptimisticMessageIfMissing(prev, next);
-    // Stale update should NOT append the optimistic message
-    expect(result).toHaveLength(1);
+    // The snapshot has no user message with this text → keep the optimistic one.
+    expect(result).toHaveLength(2);
     expect(result[0]).toBe(staleAssistant);
+    expect(result[1]).toBe(optimistic);
   });
 
   it('matches backend user message when Java sends numeric timestamp (millis)', () => {
@@ -494,12 +497,12 @@ describe('appendOptimisticMessageIfMissing', () => {
     expect(result[0]).toBe(backendMsg);
   });
 
-  it('does not append optimistic when it is newer than all messages in nextList (stale update)', () => {
-    // When optimistic message timestamp is newer than the newest message in nextList,
-    // this indicates a stale update - the backend hasn't yet received the user message.
-    // Should NOT append to avoid showing duplicates.
+  it('does not append optimistic when a backend copy with the same text exists (timestamp skew)', () => {
+    // The snapshot DOES contain the backend copy of the just-sent message, but
+    // its timestamp skewed past the match window (clock skew / async delay). It
+    // must be recognized by CONTENT and NOT duplicated by appending the optimistic.
     const nowMs = Date.now();
-    const oldBackendTimestamp = nowMs - 10000; // 10 seconds older
+    const oldBackendTimestamp = nowMs - 10000; // 10 seconds older, outside window
 
     const optimistic = makeUserMsg('new message', {
       isOptimistic: true,
@@ -511,7 +514,6 @@ describe('appendOptimisticMessageIfMissing', () => {
       timestamp: '',
       raw: { timestamp: new Date(oldBackendTimestamp).toISOString() },
     };
-    // newerMsg is older than optimistic but newer than backendMsg
     const newerMsg: ClaudeMessage = {
       type: 'assistant',
       content: 'response',
@@ -521,7 +523,7 @@ describe('appendOptimisticMessageIfMissing', () => {
     const next = [newerMsg, backendMsg];
 
     const result = appendOptimisticMessageIfMissing(prev, next);
-    // Should NOT append because optimistic is newer than maxNextTime (stale update guard)
+    // Backend copy present by content → no duplicate appended.
     expect(result).toHaveLength(2);
     expect(result[0]).toBe(newerMsg);
     expect(result[1]).toBe(backendMsg);
@@ -847,6 +849,54 @@ describe('preserveLatestMessagesOnShrink', () => {
     expect(result[0]).toBe(compactSummary);
     expect(result[1]).toBe(historyUser);
   });
+
+  it('does NOT re-append a finalized streaming assistant the snapshot already contains (turn-id match)', () => {
+    // Regression for duplicated response: after a turn ends, the finalized bubble
+    // keeps its __turnId for the merge-guard window. A background reload snapshot
+    // that is transiently shorter must not have that assistant preserved on top of
+    // its own copy of the same turn.
+    const user = makeUserMsg('question', { timestamp: '2024-01-01T00:00:00.000Z' });
+    const finalizedAssistant = makeAssistantMsg('THE ANSWER', { __turnId: 7, isStreaming: false });
+    const prev = [user, finalizedAssistant]; // length 2
+
+    // Snapshot from reload: same turn present (backend copy, no __turnId), but the
+    // list is momentarily shorter (e.g. tool_result tail not flushed yet).
+    const snapshotAssistant = makeAssistantMsg('THE ANSWER');
+    const next = [snapshotAssistant]; // length 1 < 2, triggers shrink
+
+    const result = preserveLatestMessagesOnShrink(prev, next, 'claude');
+    // Must NOT duplicate the answer.
+    expect(result).toHaveLength(1);
+    expect(result[0]).toBe(snapshotAssistant);
+  });
+
+  it('does NOT re-append a finalized assistant matched by text when turn ids differ', () => {
+    const user = makeUserMsg('question', { timestamp: '2024-01-01T00:00:00.000Z' });
+    const finalizedAssistant = makeAssistantMsg('duplicated answer', { __turnId: 12 });
+    const prev = [user, finalizedAssistant];
+
+    // Backend copy carries no __turnId; only the text identifies it.
+    const snapshotAssistant = makeAssistantMsg('duplicated answer');
+    const next = [snapshotAssistant];
+
+    const result = preserveLatestMessagesOnShrink(prev, next, 'claude');
+    expect(result).toHaveLength(1);
+    expect(result[0]).toBe(snapshotAssistant);
+  });
+
+  it('still preserves a tail assistant the snapshot does NOT contain', () => {
+    // Guard against over-dedup: a genuinely missing turn must still be preserved.
+    const user = makeUserMsg('question', { timestamp: '2024-01-01T00:00:00.000Z' });
+    const tailAssistant = makeAssistantMsg('unique tail answer', { __turnId: 9 });
+    const prev = [user, tailAssistant];
+
+    const unrelated = makeAssistantMsg('a completely different earlier answer');
+    const next = [unrelated]; // shorter, and does not contain the tail turn
+
+    const result = preserveLatestMessagesOnShrink(prev, next, 'claude');
+    expect(result).toHaveLength(2);
+    expect(result[1]).toBe(tailAssistant);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1020,6 +1070,32 @@ describe('ensureStreamingAssistantInList', () => {
     const prev = [makeUserMsg('q'), makeAssistantMsg('done', { isStreaming: false })];
     const result = [makeUserMsg('q')];
 
+    const { list, streamingIndex } = ensureStreamingAssistantInList(prev, result, false, 0);
+    expect(list).toBe(result);
+    expect(streamingIndex).toBe(-1);
+  });
+
+  it('does not duplicate when the snapshot copy matches by TEXT but lacks __turnId (primary path)', () => {
+    // Regression for duplicated response: the backend's persisted copy carries a
+    // fresh timestamp and no __turnId. A turn-id-only check would append the
+    // streaming bubble on top of it. Text match must recognize it as present.
+    const streamingMsg = makeAssistantMsg('THE ANSWER', { __turnId: 4, isStreaming: true });
+    const prev = [makeUserMsg('q'), streamingMsg];
+    const backendCopy = makeAssistantMsg('THE ANSWER', { timestamp: '2024-09-09T09:09:09.000Z' });
+    const result = [makeUserMsg('q'), backendCopy];
+
+    const { list, streamingIndex } = ensureStreamingAssistantInList(prev, result, true, 4);
+    expect(list).toBe(result);
+    expect(streamingIndex).toBe(1);
+  });
+
+  it('does not duplicate when the snapshot copy matches by TEXT but lacks __turnId (fallback path)', () => {
+    const streamingMsg = makeAssistantMsg('THE ANSWER', { __turnId: 8, isStreaming: true });
+    const prev = [makeUserMsg('q'), streamingMsg];
+    const backendCopy = makeAssistantMsg('THE ANSWER', { timestamp: '2024-09-09T09:09:09.000Z' });
+    const result = [makeUserMsg('q'), backendCopy];
+
+    // Refs cleared → fallback path.
     const { list, streamingIndex } = ensureStreamingAssistantInList(prev, result, false, 0);
     expect(list).toBe(result);
     expect(streamingIndex).toBe(-1);

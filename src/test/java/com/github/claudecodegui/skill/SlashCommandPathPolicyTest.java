@@ -59,4 +59,24 @@ public class SlashCommandPathPolicyTest {
                 Map.of("market", marketplace.toString())
         ));
     }
+
+    @Test
+    public void pluginPathSafetyFallbackStillRejectsTraversalWhenRealPathFails() throws IOException {
+        // toRealPath() throws for nonexistent paths, forcing isPluginPathSafe onto its
+        // normalized-containment fallback (the branch used for flaky \\wsl.localhost UNC paths).
+        Path root = Files.createTempDirectory("slash-command-plugin-fallback");
+        Path pluginDir = Files.createDirectories(root.resolve("plugin"));
+
+        Path missingSubDir = pluginDir.resolve("skills");
+        assertTrue("Contained-but-unresolvable subdir must pass the fallback check",
+                SlashCommandPathPolicy.isPluginPathSafe(missingSubDir, pluginDir));
+
+        Path traversal = pluginDir.resolve("..").resolve("escape");
+        assertFalse("Traversal escape must be rejected by the fallback check",
+                SlashCommandPathPolicy.isPluginPathSafe(traversal, pluginDir));
+
+        Path missingPluginDir = root.resolve("missing-plugin");
+        assertFalse("Plugin dir itself must be rejected even on the fallback path",
+                SlashCommandPathPolicy.isPluginPathSafe(missingPluginDir, missingPluginDir));
+    }
 }

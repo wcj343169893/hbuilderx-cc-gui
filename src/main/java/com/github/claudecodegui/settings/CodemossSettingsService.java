@@ -418,6 +418,15 @@ public class CodemossSettingsService {
         workingDirectoryManager.setCustomWorkingDirectory(projectPath, customWorkingDir);
     }
 
+    /**
+     * Resolve the normalized effective working directory for a project (custom
+     * directory if configured and valid, otherwise the normalized project path).
+     * This is the directory Claude runs in and the key history is stored under.
+     */
+    public String getEffectiveWorkingDirectory(String projectPath) {
+        return workingDirectoryManager.resolveEffectiveWorkingDirectory(projectPath);
+    }
+
     public Map<String, String> getAllWorkingDirectories() throws IOException {
         return workingDirectoryManager.getAllWorkingDirectories();
     }
@@ -1359,6 +1368,35 @@ public class CodemossSettingsService {
         LOG.info("[CodemossSettings] Set task completion notification enabled: " + enabled);
     }
 
+    // ==================== Ask User Question Notification Management ====================
+
+    /**
+     * Get whether the AskUserQuestion reminder notification is enabled.
+     *
+     * @return whether the reminder notification is enabled, default is false (opt-in)
+     */
+    public boolean getAskUserQuestionNotificationEnabled() throws IOException {
+        JsonObject config = readConfig();
+
+        if (config.has("askUserQuestionNotificationEnabled") && !config.get("askUserQuestionNotificationEnabled").isJsonNull()) {
+            return config.get("askUserQuestionNotificationEnabled").getAsBoolean();
+        }
+
+        return false;
+    }
+
+    /**
+     * Set whether the AskUserQuestion reminder notification is enabled.
+     *
+     * @param enabled whether to enable
+     */
+    public void setAskUserQuestionNotificationEnabled(boolean enabled) throws IOException {
+        JsonObject config = readConfig();
+        config.addProperty("askUserQuestionNotificationEnabled", enabled);
+        writeConfig(config);
+        LOG.info("[CodemossSettings] Set ask user question notification enabled: " + enabled);
+    }
+
     // ==================== AI Feature Toggle Management ====================
 
     /**
@@ -1822,5 +1860,60 @@ public class CodemossSettingsService {
 
     public void saveCodexProviderOrder(List<String> orderedIds) throws IOException {
         codexProviderManager.saveProviderOrder(orderedIds);
+    }
+
+    // ==================== User Model Pricing Management ====================
+
+    /**
+     * Persist user-configured model pricing for a provider family, replacing the whole map.
+     *
+     * @param provider {@code "claude"} or {@code "codex"}
+     * @param pricing  map of model ID → pricing; empty or null clears the provider entry
+     */
+    public void setCustomModelPricing(String provider, Map<String, ModelPricing> pricing) throws IOException {
+        JsonObject config = readConfig();
+
+        JsonObject root;
+        if (config.has("customModelPricing") && config.get("customModelPricing").isJsonObject()) {
+            root = config.getAsJsonObject("customModelPricing");
+        } else {
+            root = new JsonObject();
+            config.add("customModelPricing", root);
+        }
+
+        if (pricing == null || pricing.isEmpty()) {
+            root.remove(provider);
+        } else {
+            JsonObject providerNode = new JsonObject();
+            for (Map.Entry<String, ModelPricing> entry : pricing.entrySet()) {
+                providerNode.add(entry.getKey(), serializeModelPricing(entry.getValue()));
+            }
+            root.add(provider, providerNode);
+        }
+
+        writeConfig(config);
+        LOG.info("[CodemossSettings] Set user model pricing for " + provider
+                + ": " + (pricing == null ? 0 : pricing.size()) + " models");
+    }
+
+    private JsonObject serializeModelPricing(ModelPricing pricing) {
+        JsonObject node = new JsonObject();
+        if (isValidPrice(pricing.inputCostPer1M())) {
+            node.addProperty("inputCostPer1M", pricing.inputCostPer1M());
+        }
+        if (isValidPrice(pricing.outputCostPer1M())) {
+            node.addProperty("outputCostPer1M", pricing.outputCostPer1M());
+        }
+        if (isValidPrice(pricing.cacheWriteCostPer1M())) {
+            node.addProperty("cacheWriteCostPer1M", pricing.cacheWriteCostPer1M());
+        }
+        if (isValidPrice(pricing.cacheReadCostPer1M())) {
+            node.addProperty("cacheReadCostPer1M", pricing.cacheReadCostPer1M());
+        }
+        return node;
+    }
+
+    private static boolean isValidPrice(Double value) {
+        return value != null && Double.isFinite(value) && value >= 0;
     }
 }

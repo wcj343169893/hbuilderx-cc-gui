@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createTurnSink } from './runtime-lifecycle.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { buildRuntimeSignature, applyDynamicControls, createTurnSink } from './runtime-lifecycle.js';
 
 // ============================================================================
 // TurnSink Tests - Core Message Queue Functionality
@@ -459,6 +464,145 @@ test('Memory: failed sink releases waiting promises', async () => {
 
   assert.equal(results.length, 100);
   results.forEach(r => assert.equal(r.status, 'rejected'));
+});
+
+// ============================================================================
+// Runtime Signature & Dynamic Controls - 1M Context Toggle
+// ============================================================================
+
+test('buildRuntimeSignature differs when the [1m] context suffix toggles', () => {
+  const options = { cwd: '/tmp/project', model: 'sonnet' };
+  const sigOff = buildRuntimeSignature(options, '', true, 'epoch-x', 'claude-sonnet-4-6');
+  const sigOn = buildRuntimeSignature(options, '', true, 'epoch-x', 'claude-sonnet-4-6[1m]');
+
+  assert.notEqual(sigOff, sigOn);
+  assert.match(sigOff, /"contextWindow1M":false/);
+  assert.match(sigOn, /"contextWindow1M":true/);
+});
+
+test('buildRuntimeSignature is stable for the same [1m] state', () => {
+  const options = { cwd: '/tmp/project', model: 'sonnet' };
+  const a = buildRuntimeSignature(options, '', true, 'epoch-x', 'claude-sonnet-4-6[1m]');
+  const b = buildRuntimeSignature(options, '', true, 'epoch-x', 'claude-sonnet-4-6[1m]');
+  assert.equal(a, b);
+});
+
+test('applyDynamicControls passes the resolved model id to setModel, not the short name', async () => {
+  // The CLI subprocess resolves short names ("sonnet") against its own env,
+  // which was frozen at spawn — a daemon-side env update never reaches it.
+  // The resolved id must therefore be sent verbatim.
+  const setModelCalls = [];
+  const runtime = {
+    closed: false,
+    currentPermissionMode: 'default',
+    currentModel: 'sonnet',
+    currentResolvedModel: 'claude-sonnet-4-6',
+    currentMaxThinkingTokens: null,
+    query: {
+      setModel: async (model) => { setModelCalls.push(model); },
+    },
+  };
+
+  await applyDynamicControls(runtime, {
+    permissionMode: 'default',
+    sdkModelName: 'sonnet',
+    resolvedModelId: 'MiniMax-M2.5',
+    maxThinkingTokens: null,
+  });
+
+  assert.deepEqual(setModelCalls, ['MiniMax-M2.5']);
+  assert.equal(runtime.currentModel, 'sonnet');
+  assert.equal(runtime.currentResolvedModel, 'MiniMax-M2.5');
+});
+
+test('applyDynamicControls skips setModel when short name and resolved id are unchanged', async () => {
+  const setModelCalls = [];
+  const runtime = {
+    closed: false,
+    currentPermissionMode: 'default',
+    currentModel: 'sonnet',
+    currentResolvedModel: 'claude-sonnet-4-6',
+    currentMaxThinkingTokens: null,
+    query: {
+      setModel: async (model) => { setModelCalls.push(model); },
+    },
+  };
+
+  await applyDynamicControls(runtime, {
+    permissionMode: 'default',
+    sdkModelName: 'sonnet',
+    resolvedModelId: 'claude-sonnet-4-6',
+    maxThinkingTokens: null,
+  });
+
+  assert.deepEqual(setModelCalls, []);
+});
+
+test('acquireRuntime rebuilds the runtime when the [1m] context toggle changes', () => {
+  // This scenario drives buildRequestContext(), which calls setupApiKey().
+  // setupApiKey resolves credentials ONLY from ~/.codemoss + ~/.claude under the
+  // real home dir, ignoring env vars, and getRealHomeDir() caches that path on
+  // first use — so a clean CI runner (no credentials) makes it throw "API Key
+  // not configured". Run the scenario in a fresh child process whose HOME points
+  // at a temp dir carrying a CLI-login config, mirroring api-config.test.js which
+  // runs setupApiKey in a child for the same reason. The actual assertions live
+  // in runtime-lifecycle.1m-toggle.child.mjs.
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-gui-1m-toggle-'));
+  try {
+    fs.mkdirSync(path.join(tempHome, '.codemoss'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tempHome, '.codemoss', 'config.json'),
+      JSON.stringify({ claude: { current: '__cli_login__', providers: {} } }),
+      'utf8'
+    );
+
+    const childPath = fileURLToPath(
+      new URL('./runtime-lifecycle.1m-toggle.child.mjs', import.meta.url)
+    );
+    const output = execFileSync(process.execPath, [childPath], {
+      cwd: process.cwd(),
+      env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+      encoding: 'utf8',
+      timeout: 30000,
+    });
+
+    assert.match(output, /SCENARIO_OK/, `child scenario did not pass:\n${output}`);
+  } finally {
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  }
+});
+
+// ============================================================================
+// buildRuntimeSignature — bypassPermissions (Auto mode) rebuild
+// ============================================================================
+
+test('buildRuntimeSignature differs when entering/leaving bypassPermissions (Auto)', () => {
+  const base = { cwd: '/w', model: 'sonnet' };
+  const sigDefault = buildRuntimeSignature({ ...base, permissionMode: 'default' }, '', true, 'ep');
+  const sigAuto = buildRuntimeSignature({ ...base, permissionMode: 'bypassPermissions' }, '', true, 'ep');
+
+  // Entering Auto must change the signature so acquireRuntime rebuilds the
+  // runtime with allowDangerouslySkipPermissions at spawn.
+  assert.notEqual(sigDefault, sigAuto);
+  assert.match(sigDefault, /"bypassPermissions":false/);
+  assert.match(sigAuto, /"bypassPermissions":true/);
+});
+
+test('buildRuntimeSignature is stable across non-bypass mode changes (default/plan/acceptEdits apply live)', () => {
+  const base = { cwd: '/w', model: 'sonnet' };
+  const sigDefault = buildRuntimeSignature({ ...base, permissionMode: 'default' }, '', true, 'ep');
+  const sigPlan = buildRuntimeSignature({ ...base, permissionMode: 'plan' }, '', true, 'ep');
+  const sigAccept = buildRuntimeSignature({ ...base, permissionMode: 'acceptEdits' }, '', true, 'ep');
+
+  // These modes need no launch flag and are applied live via setPermissionMode,
+  // so they must NOT force a runtime rebuild.
+  assert.equal(sigDefault, sigPlan);
+  assert.equal(sigDefault, sigAccept);
+});
+
+test('buildRuntimeSignature treats a missing permissionMode as non-bypass', () => {
+  const sig = buildRuntimeSignature({ cwd: '/w', model: 'sonnet' }, '', true, 'ep');
+  assert.match(sig, /"bypassPermissions":false/);
 });
 
 console.log('\n✅ All TurnSink tests defined. Run with: node runtime-lifecycle.test.js');

@@ -118,6 +118,16 @@ const _originalConsoleError = console.error.bind(console);
 // Claude's Bash tool, Codex, MCP servers, any future tool — automatically
 // sees the user's full environment without per-tool Java-side patches.
 
+// Fix WSL-style HOME on native Windows: when the IDE/launcher injects a WSL mount
+// path (e.g. HOME=/mnt/c/Users/me) but the daemon's Bash tool is Git Bash (MSYS,
+// which uses /c/...), tools like git can't resolve it and fall back to a phantom
+// ~/.gitconfig, breaking config/credentials. Normalize it to the native Windows home
+// before any subprocess is spawned.
+if (process.platform === 'win32' && /^\/mnt\/[a-z]\//i.test(process.env.HOME || '')) {
+  const m = process.env.HOME.match(/^\/mnt\/([a-z])\/(.*)$/i);
+  if (m) process.env.HOME = `${m[1].toUpperCase()}:/${m[2]}`;
+}
+
 if (process.platform !== 'win32' && !process.env.__AI_BRIDGE_ENV_PROBED) {
   // PATH is critical; runtime homes let tools resolve config/data dirs correctly
   const VARS_TO_INHERIT = new Set([

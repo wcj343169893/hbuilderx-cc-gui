@@ -297,24 +297,16 @@ public class SessionLifecycleManager {
 
         try {
             CodemossSettingsService settingsService = new CodemossSettingsService();
-            String customWorkingDir = settingsService.getCustomWorkingDirectory(projectPath);
-
-            if (customWorkingDir != null && !customWorkingDir.isEmpty()) {
-                File workingDirFile = new File(customWorkingDir);
-                if (!workingDirFile.isAbsolute()) {
-                    workingDirFile = new File(projectPath, customWorkingDir);
-                }
-                if (workingDirFile.exists() && workingDirFile.isDirectory()) {
-                    String resolvedPath = workingDirFile.getAbsolutePath();
-                    LOG.info("Using custom working directory: " + resolvedPath);
-                    return resolvedPath;
-                } else {
-                    LOG.warn("Custom working directory does not exist: "
-                                     + workingDirFile.getAbsolutePath() + ", falling back to project root");
-                }
+            // Normalized effective working directory (custom dir if valid, else the
+            // project path). Collapsing relative segments here keeps the launched cwd
+            // consistent with the directory history is read from.
+            String resolvedPath = settingsService.getEffectiveWorkingDirectory(projectPath);
+            if (resolvedPath != null && !resolvedPath.isEmpty()) {
+                LOG.info("Using working directory: " + resolvedPath);
+                return resolvedPath;
             }
         } catch (Exception e) {
-            LOG.warn("Failed to read custom working directory: " + e.getMessage());
+            LOG.warn("Failed to resolve working directory: " + e.getMessage());
         }
 
         return projectPath;

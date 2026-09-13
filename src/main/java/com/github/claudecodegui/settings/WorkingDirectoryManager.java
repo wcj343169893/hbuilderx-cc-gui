@@ -1,8 +1,10 @@
 package com.github.claudecodegui.settings;
 
+import com.github.claudecodegui.util.PathUtils;
 import com.google.gson.JsonObject;
 import com.intellij.openapi.diagnostic.Logger;
 
+import java.io.File;
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
@@ -71,6 +73,54 @@ public class WorkingDirectoryManager {
 
         configWriter.accept(config);
         LOG.info("[WorkingDirectoryManager] Set custom working directory for " + projectPath + ": " + customWorkingDir);
+    }
+
+    /**
+     * Resolve the effective working directory for a project — the same directory
+     * Claude is launched in, normalized so that {@code ..}/{@code .} are collapsed.
+     *
+     * <p>This is the single source of truth used by both the session launchers and
+     * the history readers. Keying history off this value (instead of the raw IDE
+     * base path) ensures the {@code ~/.claude/projects/<key>} directory the GUI reads
+     * matches the one the SDK writes to when a custom working directory is set.
+     *
+     * <p>Resolution order:
+     * <ol>
+     *   <li>No custom directory configured → the normalized project path.</li>
+     *   <li>Custom directory (absolute, or relative to the project root) that exists
+     *       and is a directory → that normalized directory.</li>
+     *   <li>Custom directory missing/invalid → fall back to the normalized project
+     *       path.</li>
+     * </ol>
+     *
+     * @param projectPath the project root path
+     * @return the normalized effective working directory, or {@code projectPath}
+     *         unchanged when it is null/empty
+     */
+    public String resolveEffectiveWorkingDirectory(String projectPath) {
+        if (projectPath == null || projectPath.isEmpty()) {
+            return projectPath;
+        }
+
+        String customWorkingDir = getCustomWorkingDirectory(projectPath);
+        if (customWorkingDir == null || customWorkingDir.trim().isEmpty()) {
+            return PathUtils.normalizeAbsolute(projectPath);
+        }
+
+        File workingDirFile = new File(customWorkingDir.trim());
+        if (!workingDirFile.isAbsolute()) {
+            workingDirFile = new File(projectPath, customWorkingDir.trim());
+        }
+
+        String normalized = PathUtils.normalizeAbsolute(workingDirFile.getPath());
+        File normalizedFile = new File(normalized);
+        if (normalizedFile.exists() && normalizedFile.isDirectory()) {
+            return normalized;
+        }
+
+        LOG.warn("[WorkingDirectoryManager] Custom working directory does not exist: "
+                + normalized + ", falling back to project root");
+        return PathUtils.normalizeAbsolute(projectPath);
     }
 
     /**

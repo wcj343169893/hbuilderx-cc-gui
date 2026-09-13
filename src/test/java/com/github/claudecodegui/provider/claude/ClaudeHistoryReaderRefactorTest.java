@@ -1,6 +1,9 @@
 package com.github.claudecodegui.provider.claude;
 
+import com.github.claudecodegui.provider.CustomPricingProvider;
 import com.github.claudecodegui.provider.claude.ClaudeHistoryReader.ProjectStatistics;
+import org.junit.After;
+import org.junit.Before;
 import org.junit.Test;
 
 import java.io.IOException;
@@ -12,6 +15,26 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 
 public class ClaudeHistoryReaderRefactorTest {
+
+    private Path pricingIsolationDir;
+
+    /**
+     * The aggregator consults the CustomPricingProvider singleton, which reads the developer's
+     * real ~/.codemoss/config.json. Point it at an empty config so the exact-cost assertions
+     * below stay hermetic regardless of local custom pricing.
+     */
+    @Before
+    public void isolateCustomPricingFromLocalConfig() throws IOException {
+        pricingIsolationDir = Files.createTempDirectory("claude-history-pricing-isolation");
+        CustomPricingProvider.setInstanceForTests(
+                CustomPricingProvider.createForTests(pricingIsolationDir.resolve("config.json")));
+    }
+
+    @After
+    public void restoreCustomPricingSingleton() throws IOException {
+        CustomPricingProvider.setInstanceForTests(null);
+        Files.deleteIfExists(pricingIsolationDir);
+    }
 
     @Test
     public void usageAggregatorBuildsStatisticsWithCacheAwareDailyUsage() throws IOException {

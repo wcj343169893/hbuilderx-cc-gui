@@ -374,13 +374,7 @@ public class PermissionService {
                 PermissionResponse decision = resolveDecision(response);
                 boolean allow = decision.isAllow();
                 if (decision == PermissionResponse.ALLOW_ALWAYS) {
-                    // Security (E): for command-execution tools, scope "Always allow" to the
-                    // exact command (parameter-level), not the tool name.
-                    if (PermissionDecisionStore.isCommandExecutionTool(toolName)) {
-                        decisionStore.rememberParameterDecision(toolName, inputs, PermissionResponse.ALLOW_ALWAYS);
-                    } else {
-                        decisionStore.rememberToolDecision(toolName, PermissionResponse.ALLOW_ALWAYS);
-                    }
+                    decisionStore.rememberToolDecision(toolName, PermissionResponse.ALLOW_ALWAYS);
                 }
                 notifyDecision(toolName, inputs, decision);
                 fileProtocol.writePermissionResponse(requestId, allow);

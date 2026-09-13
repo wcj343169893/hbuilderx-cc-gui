@@ -17,15 +17,27 @@ function makeHook(mode = 'default', cwd = '/tmp/test-cwd') {
   };
 }
 
-test('default mode: Bash returns "ask" so project settings.json allow-rules cannot silently auto-approve it', async () => {
+test('default mode: Bash returns "ask" so settings.json allow-rules cannot silently approve commands', async () => {
   const hook = makeHook('default');
   const result = await hook({
     tool_name: 'Bash',
     tool_input: { command: 'rm something.txt' },
   });
-  // Security fix (B): a malicious repo's .claude/settings.json {permissions:{allow:['Bash(*)']}}
-  // must NOT silently auto-approve Bash. A hook 'ask' decision overrides settings allow-rules
-  // and routes the call through our own canUseTool / Java approval dialog.
+  // Hook 'ask' takes precedence over settings.json allow-rules. This is deliberate:
+  // settingSources includes 'project' and 'local', whose .claude/settings.json is
+  // attacker-controllable when a malicious repo is opened, so a yield here would let
+  // such an allow-rule auto-run Bash silently. The 'ask' path emits the can_use_tool
+  // control request, which reaches canUseTool -> the Java dialog, whose "Always allow"
+  // is remembered at tool level (confirm once per tool per conversation).
+  assert.equal(result?.hookSpecificOutput?.permissionDecision, 'ask');
+});
+
+test('default mode: Write returns "ask" so unmatched writes reach canUseTool / Java permissions', async () => {
+  const hook = makeHook('default');
+  const result = await hook({
+    tool_name: 'Write',
+    tool_input: { file_path: '/tmp/test-cwd/out.txt', content: 'hello' },
+  });
   assert.equal(result?.hookSpecificOutput?.permissionDecision, 'ask');
 });
 
@@ -45,6 +57,17 @@ test('default mode: Grep yields "continue"', async () => {
     tool_input: { pattern: 'foo' },
   });
   assert.equal(result?.continue, true);
+});
+
+test('default mode: read-only helper tools (BashOutput, NotebookRead) yield "continue" instead of prompting', async () => {
+  const hook = makeHook('default');
+  for (const [toolName, toolInput] of [
+    ['BashOutput', { bash_id: 'shell-1' }],
+    ['NotebookRead', { notebook_path: '/tmp/test-cwd/nb.ipynb' }],
+  ]) {
+    const result = await hook({ tool_name: toolName, tool_input: toolInput });
+    assert.equal(result?.continue, true, `expected ${toolName} to yield to the SDK`);
+  }
 });
 
 test('bypassPermissions mode: Bash yields "continue" (SDK mode-check auto-allows)', async () => {
@@ -86,13 +109,23 @@ test('acceptEdits mode: Bash returns "ask" (acceptEdits auto-accepts edits only,
   assert.equal(result?.hookSpecificOutput?.permissionDecision, 'ask');
 });
 
-test('default mode: MCP tool yields "continue"', async () => {
+test('default mode: read-only MCP tool (verb allowlist) yields "continue"', async () => {
   const hook = makeHook('default');
-  const result = await hook({
-    tool_name: 'mcp__some-server__some-tool',
-    tool_input: { foo: 'bar' },
-  });
-  assert.equal(result?.continue, true);
+  for (const toolName of ['mcp__some-server__search_docs', 'mcp__context7__get_library', 'mcp__db__list_tables']) {
+    const result = await hook({ tool_name: toolName, tool_input: { query: 'x' } });
+    assert.equal(result?.continue, true, `expected ${toolName} to yield to the SDK`);
+  }
+});
+
+test('default mode: non-read-only MCP tool returns "ask" so a settings.json allow-rule cannot silently auto-approve it', async () => {
+  const hook = makeHook('default');
+  // Names lacking "Write"/"Edit" (delete_file, run_command, exec) must NOT be treated as
+  // read-only: the old blocklist heuristic let them yield to the SDK, where a project/local
+  // .claude/settings.json allow-rule (attacker-controllable) could auto-approve them silently.
+  for (const toolName of ['mcp__fs__delete_file', 'mcp__shell__run_command', 'mcp__db__execute', 'mcp__some-server__some-tool']) {
+    const result = await hook({ tool_name: toolName, tool_input: {} });
+    assert.equal(result?.hookSpecificOutput?.permissionDecision, 'ask', `expected ${toolName} to ask`);
+  }
 });
 
 test('EnterPlanMode is still auto-allowed (mode transition signal)', async () => {
@@ -129,6 +162,16 @@ test('plan mode: read-only MCP tool yields "continue"', async () => {
     tool_input: { query: 'x' },
   });
   assert.equal(result?.continue, true);
+});
+
+test('plan mode: non-read-only MCP tool is denied (plan mode is read-only; must not be auto-yielded)', async () => {
+  const hook = makeHook('plan');
+  // The old blocklist yielded these to the SDK during plan mode; a destructive MCP tool must
+  // instead fall through to the plan-mode deny.
+  for (const toolName of ['mcp__fs__delete_file', 'mcp__shell__run_command']) {
+    const result = await hook({ tool_name: toolName, tool_input: {} });
+    assert.equal(result?.hookSpecificOutput?.permissionDecision, 'deny', `expected ${toolName} to be denied`);
+  }
 });
 
 test('plan mode: Agent is still auto-allowed (sub-agent permission flow unchanged)', async () => {

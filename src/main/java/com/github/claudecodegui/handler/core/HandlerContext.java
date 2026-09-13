@@ -69,6 +69,22 @@ public class HandlerContext {
         return settingsService;
     }
 
+    /**
+     * Resolve the normalized effective working directory for the current project —
+     * the custom working directory when configured and valid, otherwise the project
+     * base path. This is the directory Claude runs in and the key history is stored
+     * under, so history readers must use this instead of the raw base path.
+     *
+     * <p>Null-safe: returns the raw base path when no settings service is wired.
+     */
+    public String resolveEffectiveWorkingDirectory() {
+        String basePath = project != null ? project.getBasePath() : null;
+        if (settingsService == null) {
+            return basePath;
+        }
+        return settingsService.getEffectiveWorkingDirectory(basePath);
+    }
+
     public ClaudeSession getSession() {
         return session;
     }

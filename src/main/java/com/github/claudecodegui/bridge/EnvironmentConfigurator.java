@@ -34,6 +34,8 @@ public class EnvironmentConfigurator {
     private static final String CLAUDE_SESSION_ID_ENV = "CLAUDE_SESSION_ID";
     private static final String CLAUDE_PERMISSION_SAFETY_NET_ENV = "CLAUDE_PERMISSION_SAFETY_NET_MS";
     private static final String CODEX_HOME_ENV = "CODEX_HOME";
+    private static final String HOME_ENV = "HOME";
+    private static final Pattern WSL_MOUNT_PATH_PATTERN = Pattern.compile("^/mnt/([a-zA-Z])(?:/(.*))?$");
 
     private final CodemossSettingsService settingsService;
     private volatile String cachedPermissionDir = null;
@@ -142,27 +144,77 @@ public class EnvironmentConfigurator {
             env.put("PATH", newPathStr);
         }
 
-        // 4. Ensure the HOME environment variable is set correctly
-        // The SDK needs HOME to locate the ~/.claude/commands/ directory
-        String home = env.get("HOME");
-        if (home == null || home.isEmpty()) {
-            home = NodeDetector.convertToWslPath(NodeDetector.resolveHomeForFileOps());
-            if (home != null && !home.isEmpty()) {
-                env.put("HOME", home);
-            }
+        // 4. Ensure HOME matches the process type. Native Windows child processes
+        // must not inherit WSL mount paths such as /mnt/c/Users/me.
+        boolean isWslNode = NodeDetector.isWslPath(nodeExecutable);
+        String home = resolveHomeForNodeEnvironment(nodeExecutable, env.get(HOME_ENV));
+        if (home != null && !home.isEmpty()) {
+            env.put(HOME_ENV, home);
         }
 
         // 5. Ensure CODEX_HOME is stable and non-empty (Codex uses it to locate config/sessions/skills)
         // Environment variables may be missing when launched from macOS GUI; relying on implicit defaults causes unstable feature detection (e.g. skills tool appearing intermittently)
         String codexHome = env.get(CODEX_HOME_ENV);
         if (codexHome == null || codexHome.trim().isEmpty()) {
-            String userHome = NodeDetector.resolveHomeForFileOps();
-            if (userHome != null && !userHome.isEmpty()) {
-                env.put(CODEX_HOME_ENV, Paths.get(userHome, ".codex").toString());
+            if (home != null && !home.isEmpty()) {
+                env.put(CODEX_HOME_ENV, appendChildPath(home, ".codex", isWslNode));
             }
+        } else {
+            env.put(CODEX_HOME_ENV, normalizePathForNodeEnvironment(codexHome, isWslNode));
         }
 
         configurePermissionEnv(env, nodeExecutable);
+    }
+
+    static String resolveHomeForNodeEnvironment(String nodeExecutable, String currentHome) {
+        boolean isWslNode = NodeDetector.isWslPath(nodeExecutable);
+        if (currentHome != null && !currentHome.isEmpty()) {
+            return normalizePathForNodeEnvironment(currentHome, isWslNode);
+        }
+
+        String resolvedHome = NodeDetector.resolveHomeForFileOps(nodeExecutable);
+        if (resolvedHome == null || resolvedHome.isEmpty()) {
+            return resolvedHome;
+        }
+        return normalizePathForNodeEnvironment(resolvedHome, isWslNode);
+    }
+
+    static String normalizePathForNodeEnvironment(String path, boolean isWslNode) {
+        if (path == null || path.isEmpty()) {
+            return path;
+        }
+        if (isWslNode) {
+            return NodeDetector.convertToWslPath(path);
+        }
+        String windowsPath = convertWslMountPathToWindowsPath(path);
+        return windowsPath != null ? windowsPath : path;
+    }
+
+    static String convertWslMountPathToWindowsPath(String path) {
+        if (!PlatformUtils.isWindows() || path == null || path.isEmpty()) {
+            return null;
+        }
+        Matcher matcher = WSL_MOUNT_PATH_PATTERN.matcher(path);
+        if (!matcher.matches()) {
+            return null;
+        }
+        String drive = matcher.group(1).toUpperCase();
+        String rest = matcher.group(2);
+        if (rest == null || rest.isEmpty()) {
+            return drive + ":\\";
+        }
+        return drive + ":\\" + rest.replace('/', '\\');
+    }
+
+    private static String appendChildPath(String parent, String child, boolean isWslNode) {
+        if (isWslNode) {
+            String normalizedParent = parent.replace('\\', '/');
+            while (normalizedParent.endsWith("/")) {
+                normalizedParent = normalizedParent.substring(0, normalizedParent.length() - 1);
+            }
+            return normalizedParent + "/" + child;
+        }
+        return Paths.get(parent, child).toString();
     }
 
     /**

@@ -57,7 +57,7 @@ public class HistoryMessageInjector {
             // Backward compatible: legacy payload is the raw sessionId string.
         }
 
-        String rawPath = context.getProject().getBasePath();
+        String rawPath = context.resolveEffectiveWorkingDirectory();
         String nodePath = NodeDetector.getInstance().getCachedNodePath();
         String projectPath = NodeDetector.isWslPath(nodePath) ? NodeDetector.convertToWslPath(rawPath) : rawPath;
         if (projectPath == null) {

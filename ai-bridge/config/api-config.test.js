@@ -297,13 +297,22 @@ test('buildCliEnv leaves CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST unset for cloud pr
 });
 
 test('buildCliEnv leaves CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST unset for CLI login', () => {
+  // Regression guard for #1327: CLI login relies on the Claude CLI's own OAuth
+  // credentials. The host-managed flag makes the CLI strip its native credential
+  // lookup, so an authenticated user gets "Not logged in · Please run /login".
+  // cli_login is signaled purely by ~/.codemoss/config.json (claude.current), so
+  // no cloud-provider flag is present — the pre-fix code wrongly defaulted to
+  // host-managed here. The flag must be absent, even when process.env carries an
+  // inherited copy from a parent Claude Code host.
   const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-gui-api-config-'));
   writeCodemossClaudeConfig(tempHome, '__cli_login__');
   writeClaudeSettingsEnv(tempHome, {});
 
   const env = runBuildCliEnv(tempHome);
 
-  assert.equal(env.HOST_MANAGED, undefined);
+  assert.equal(env.HOST_MANAGED, undefined,
+    'CLI login must suppress the host-managed flag (and clear any inherited copy)');
+  // Identity env must still be present regardless of provider mode.
   assert.equal(env.ENTRYPOINT, 'cli');
   assert.equal(env.USER_TYPE, 'external');
 });

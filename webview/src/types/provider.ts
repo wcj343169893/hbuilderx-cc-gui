@@ -43,6 +43,8 @@ export const STORAGE_KEYS = {
   CLAUDE_MODEL_MAPPING: 'claude-model-mapping',
   /** Custom Claude model list */
   CLAUDE_CUSTOM_MODELS: 'claude-custom-models',
+  /** Pricing for Claude models configured by provider/settings.json, not shown as custom models */
+  CLAUDE_CONFIGURED_MODEL_PRICING: 'claude-configured-model-pricing',
 } as const;
 
 /**
@@ -101,6 +103,32 @@ export function isValidCodexCustomModel(model: unknown): model is CodexCustomMod
   // description is optional, but must be a string if present
   if (obj.description !== undefined && typeof obj.description !== 'string') return false;
 
+  // pricing is optional; when present every provided field must be a non-negative number
+  if (obj.pricing !== undefined) {
+    if (!isValidModelPricing(obj.pricing)) return false;
+  }
+
+  return true;
+}
+
+/**
+ * Validate whether a ModelPricing object is valid.
+ * Every field is optional, but if present must be a finite number >= 0.
+ */
+export function isValidModelPricing(pricing: unknown): boolean {
+  if (!pricing || typeof pricing !== 'object') return false;
+  const p = pricing as Record<string, unknown>;
+  const fields: (keyof ModelPricing)[] = [
+    'inputCostPer1M',
+    'outputCostPer1M',
+    'cacheWriteCostPer1M',
+    'cacheReadCostPer1M',
+  ];
+  for (const f of fields) {
+    const v = p[f];
+    if (v === undefined) continue;
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) return false;
+  }
   return true;
 }
 
@@ -161,6 +189,23 @@ export type ProviderCategory =
   | 'custom';       // Custom
 
 /**
+ * Per-million-token pricing for a custom model.
+ *
+ * All fields are optional: a missing field means "fall back to the default
+ * pricing for that token kind" in the backend cost calculation. Units are
+ * USD per 1,000,000 tokens, consistent with the backend `*CostPer1M` fields.
+ *
+ * cacheWrite is only meaningful for Claude-family models (Codex sessions do
+ * not track cache-write tokens).
+ */
+export interface ModelPricing {
+  inputCostPer1M?: number;
+  outputCostPer1M?: number;
+  cacheWriteCostPer1M?: number;
+  cacheReadCostPer1M?: number;
+}
+
+/**
  * Codex custom model configuration
  */
 export interface CodexCustomModel {
@@ -170,6 +215,8 @@ export interface CodexCustomModel {
   label: string;
   /** Model description */
   description?: string;
+  /** Optional per-million-token pricing for cost calculation */
+  pricing?: ModelPricing;
 }
 
 /**

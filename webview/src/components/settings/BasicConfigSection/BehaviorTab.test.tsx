@@ -29,6 +29,8 @@ function renderBehaviorTab(overrides: Partial<ComponentProps<typeof BehaviorTab>
     onAiTitleGenerationEnabledChange: vi.fn(),
     taskCompletionNotificationEnabled: false,
     onTaskCompletionNotificationEnabledChange: vi.fn(),
+    askUserQuestionNotificationEnabled: false,
+    onAskUserQuestionNotificationEnabledChange: vi.fn(),
     permissionDialogTimeoutSeconds: 300,
     onPermissionDialogTimeoutChange: vi.fn(),
     ...overrides,
@@ -37,6 +39,37 @@ function renderBehaviorTab(overrides: Partial<ComponentProps<typeof BehaviorTab>
   render(<BehaviorTab {...props} />);
   return props;
 }
+
+describe('BehaviorTab ask user question notification toggle', () => {
+  it('renders unchecked by default and fires the change callback with true on click', () => {
+    const onAskUserQuestionNotificationEnabledChange = vi.fn();
+    renderBehaviorTab({ onAskUserQuestionNotificationEnabledChange });
+
+    const checkbox = screen.getByRole('checkbox', {
+      name: /settings.basic.askUserQuestionNotification.disabled/i,
+    }) as HTMLInputElement;
+    expect(checkbox.checked).toBe(false);
+
+    fireEvent.click(checkbox);
+    expect(onAskUserQuestionNotificationEnabledChange).toHaveBeenCalledWith(true);
+  });
+
+  it('renders checked when enabled and fires the change callback with false on click', () => {
+    const onAskUserQuestionNotificationEnabledChange = vi.fn();
+    renderBehaviorTab({
+      askUserQuestionNotificationEnabled: true,
+      onAskUserQuestionNotificationEnabledChange,
+    });
+
+    const checkbox = screen.getByRole('checkbox', {
+      name: /settings.basic.askUserQuestionNotification.enabled/i,
+    }) as HTMLInputElement;
+    expect(checkbox.checked).toBe(true);
+
+    fireEvent.click(checkbox);
+    expect(onAskUserQuestionNotificationEnabledChange).toHaveBeenCalledWith(false);
+  });
+});
 
 describe('BehaviorTab permission dialog timeout', () => {
   it('exposes the timeout number input with an accessible label', () => {

@@ -251,3 +251,70 @@ export interface CodexConfig {
   /** Other configuration */
   [key: string]: any;
 }
+
+// ==================== MCP Marketplace Types ====================
+
+/**
+ * MCP marketplace source returned by the backend.
+ */
+export interface McpMarketplaceSource {
+  id: string;
+  name: string;
+  type: 'BUILT_IN' | 'REGISTRY' | 'GITHUB_ORG';
+  url: string;
+  enabled: boolean;
+}
+
+/**
+ * Install option for a marketplace entry.
+ */
+export interface McpInstallOption {
+  label: string;
+  type: 'stdio' | 'http' | 'sse';
+  command?: string;
+  args?: string[];
+  url?: string;
+  env?: Record<string, string>;
+  headers?: Record<string, string>;
+  source?: string;
+  riskLevel?: string;
+}
+
+/**
+ * Normalized MCP marketplace entry.
+ */
+export interface McpMarketplaceEntry {
+  id: string;
+  name: string;
+  displayName?: string;
+  description?: string;
+  status?: string;
+  sourceId: string;
+  sourceName: string;
+  sourceType: string;
+  homepage?: string;
+  repositoryUrl?: string;
+  docsUrl?: string;
+  official: boolean;
+  tags: string[];
+  installOptions: McpInstallOption[];
+}
+
+/**
+ * MCP marketplace search response.
+ */
+export interface McpMarketplaceSearchResponse {
+  query: string;
+  sourceId: string;
+  entries: McpMarketplaceEntry[];
+  error?: string;
+}
+
+/**
+ * Response for an external MCP configuration import (e.g. GitHub Copilot format).
+ * The servers are already mapped to internal entries by the Java backend.
+ */
+export interface McpImportPreviewResponse {
+  servers: McpServer[];
+  error?: string;
+}

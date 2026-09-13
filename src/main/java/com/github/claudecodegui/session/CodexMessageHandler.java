@@ -130,10 +130,24 @@ public class CodexMessageHandler implements MessageCallback {
 
         Message errorMessage = new Message(Message.Type.ERROR, error);
         state.addMessage(errorMessage);
-        callbackHandler.notifyMessageUpdate(state.getMessages());
+
+        // Signal stream-end BEFORE pushing the error snapshot (mirrors the PR #1421
+        // fix in ClaudeMessageHandler.onError). The webview's onStreamEnd cancels any
+        // pending updateMessages rAF; pushing the error snapshot first lets that
+        // cancellation drop it, so the "API request failed" bubble never renders.
+        // Ending the stream first lets the subsequent snapshot land normally.
+        //
+        // Kept conditional on wasStreaming — deliberately NOT unconditional like the
+        // Claude handler. A non-streaming Codex turn maps to the webview's 'minimal'
+        // stream-end mode (getStreamEndHandlingMode: provider === 'codex'), which only
+        // cancels pending updates and does NOT run the dangling-tool cleanup the Claude
+        // 'skip' mode does. So an unconditional call would buy no tool cleanup here
+        // while adding a redundant minimal-mode pass. The dangling-tool-on-non-
+        // streaming-error case needs a separate webview-side fix, not this ordering one.
         if (wasStreaming) {
             callbackHandler.notifyStreamEnd();
         }
+        callbackHandler.notifyMessageUpdate(state.getMessages());
         resetStreamingAccumulator();
         callbackHandler.notifyStateChange(state.isBusy(), state.isLoading(), state.getError());
     }

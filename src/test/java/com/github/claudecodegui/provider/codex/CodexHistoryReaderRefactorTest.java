@@ -1,10 +1,13 @@
 package com.github.claudecodegui.provider.codex;
 
+import com.github.claudecodegui.provider.CustomPricingProvider;
 import com.github.claudecodegui.provider.codex.CodexHistoryReader.CodexMessage;
 import com.github.claudecodegui.provider.codex.CodexHistoryReader.ProjectStatistics;
 import com.github.claudecodegui.provider.codex.CodexHistoryReader.SessionInfo;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
+import org.junit.After;
+import org.junit.Before;
 import org.junit.Test;
 
 import java.io.IOException;
@@ -23,6 +26,26 @@ import static org.junit.Assert.assertTrue;
 public class CodexHistoryReaderRefactorTest {
 
     private final Gson gson = new Gson();
+
+    private Path pricingIsolationDir;
+
+    /**
+     * The aggregator consults the CustomPricingProvider singleton, which reads the developer's
+     * real ~/.codemoss/config.json. Point it at an empty config so the exact-cost assertions
+     * below stay hermetic regardless of local custom pricing.
+     */
+    @Before
+    public void isolateCustomPricingFromLocalConfig() throws IOException {
+        pricingIsolationDir = Files.createTempDirectory("codex-history-pricing-isolation");
+        CustomPricingProvider.setInstanceForTests(
+                CustomPricingProvider.createForTests(pricingIsolationDir.resolve("config.json")));
+    }
+
+    @After
+    public void restoreCustomPricingSingleton() throws IOException {
+        CustomPricingProvider.setInstanceForTests(null);
+        Files.deleteIfExists(pricingIsolationDir);
+    }
 
     @Test
     public void parserBuildsSessionInfoFromSessionFile() throws IOException {

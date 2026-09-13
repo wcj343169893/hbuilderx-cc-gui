@@ -124,20 +124,30 @@ export const appendOptimisticMessageIfMissing = (
     }
   }
   if (matchedIndex < 0) {
-    // Guard against stale backend updates: if the optimistic message was
-    // created after the newest message in nextList, this update was
-    // generated before the user sent the message — a future update will
-    // include it. Don't append, otherwise the UI shows a duplicate until
-    // the real update arrives.
-    if (nextList.length > 0 && Number.isFinite(optimisticTime)) {
-      let maxNextTime = 0;
-      for (const m of nextList) {
-        const ts = getMessageTimestampMs(m) ?? 0;
-        if (Number.isFinite(ts) && ts > maxNextTime) {
-          maxNextTime = ts;
-        }
-      }
-      if (maxNextTime > 0 && optimisticTime > maxNextTime) {
+    // No timestamp-window match. Distinguish two cases by CONTENT, not by time:
+    //
+    // 1. The snapshot already contains a user message with identical text — that
+    //    IS the backend copy of this optimistic message, whose timestamp merely
+    //    skewed outside the match window. Appending would duplicate it, so drop
+    //    the optimistic bubble and let the backend copy stand.
+    //
+    // 2. The snapshot contains no user message with this text — the just-sent
+    //    message simply hasn't been persisted into this snapshot yet (the COMMON
+    //    case: snapshots are generated before the send lands, and even more so
+    //    now that a turn can be deferred behind an in-flight CLI run or a
+    //    background session_updated reload arrives mid-send). Keep the optimistic
+    //    bubble so the user's own message never vanishes while it's being
+    //    answered. A later snapshot that includes the persisted message matches
+    //    above and replaces it.
+    //
+    // The previous "optimistic is newer than everything in the snapshot" time
+    // heuristic could not tell these apart and dropped case 2 as well — that was
+    // the "my message disappears but the agent answers it" bug.
+    if (optimisticText) {
+      const backendCopyExists = nextList.some(
+        (m) => m.type === 'user' && getUserMessageComparableContent(m) === optimisticText,
+      );
+      if (backendCopyExists) {
         return nextList;
       }
     }
@@ -190,6 +200,33 @@ const getUserMessageComparableContent = (message: ClaudeMessage): string => {
     .map((block: any) => block.text)
     .join('\n');
   return rawText || message.content || '';
+};
+
+/**
+ * Extract comparable text from an assistant message for duplicate detection.
+ * Prefers the top-level `content` string; falls back to concatenating the text
+ * blocks in `raw` (object or JSON-string form). Trimmed; empty when no text.
+ */
+const getAssistantComparableContent = (message: ClaudeMessage): string => {
+  if (typeof message.content === 'string' && message.content.trim()) {
+    return message.content.trim();
+  }
+  let raw: unknown = message.raw;
+  if (typeof raw === 'string') {
+    try {
+      raw = JSON.parse(raw);
+    } catch {
+      return '';
+    }
+  }
+  const content = (raw as any)?.message?.content ?? (raw as any)?.content;
+  if (!Array.isArray(content)) return '';
+  const text = content
+    .filter((b: any) => b && typeof b === 'object' && b.type === 'text' && typeof b.text === 'string')
+    .map((b: any) => b.text)
+    .join('\n')
+    .trim();
+  return text;
 };
 
 /**
@@ -545,27 +582,62 @@ export const preserveLatestMessagesOnShrink = (
     return nextList;
   }
 
-  // FIX: Filter out optimistic messages from preservedTail if nextList already
-  // has a matching user message. This prevents duplicate display when compact
-  // sends a shorter list but includes the backend version of the optimistic.
+  // FIX: Filter out messages from preservedTail that nextList already contains,
+  // to avoid duplicate display when a shorter snapshot (compact / background
+  // reload) still carries its own copy of the tail turn.
   const nextListUserTexts = new Set<string>();
-  for (const msg of nextList) {
+  const nextListAssistantTurnIds = new Set<number>();
+  const nextListAssistantTexts = new Set<string>();
+  // Assistant text is a weak identity — two distinct turns can share short text like "Done." or
+  // "ok". Only treat a text match as a duplicate within a recency window at the END of nextList,
+  // where a genuinely re-appended tail turn would live; otherwise an older turn with identical
+  // text could cause the newest turn to be dropped. Turn ids are exact and collected unbounded.
+  const assistantTextWindowStart = Math.max(0, nextList.length - (preservedTail.length + 2));
+  for (let i = 0; i < nextList.length; i++) {
+    const msg = nextList[i];
     if (msg.type === 'user') {
       const text = getUserMessageComparableContent(msg);
       if (text) nextListUserTexts.add(text);
+    } else if (msg.type === 'assistant') {
+      if (typeof msg.__turnId === 'number' && msg.__turnId > 0) {
+        nextListAssistantTurnIds.add(msg.__turnId);
+      }
+      if (i >= assistantTextWindowStart) {
+        const text = getAssistantComparableContent(msg);
+        if (text) nextListAssistantTexts.add(text);
+      }
     }
   }
 
   const filteredTail = preservedTail.filter((msg) => {
-    // Always preserve assistant and other non-user messages
-    if (msg.type !== 'user') return true;
-    // Don't preserve optimistic if nextList has matching content
-    if (msg.isOptimistic) {
-      const optimisticText = getUserMessageComparableContent(msg);
-      if (optimisticText && nextListUserTexts.has(optimisticText)) {
-        return false; // Skip this optimistic to avoid duplicate
+    // Don't preserve optimistic user messages if nextList has matching content.
+    if (msg.type === 'user') {
+      if (msg.isOptimistic) {
+        const optimisticText = getUserMessageComparableContent(msg);
+        if (optimisticText && nextListUserTexts.has(optimisticText)) {
+          return false; // Skip this optimistic to avoid duplicate
+        }
       }
+      return true;
     }
+    // Don't re-append an assistant turn the snapshot already contains. A
+    // finalized streaming bubble keeps its __turnId for the merge-guard window,
+    // so hasStreamingTail pulls it into the preserved tail even though the same
+    // turn is already present in the (shorter) snapshot. Re-appending it renders
+    // the answer twice, and the __turnId merge-guard then refuses to collapse the
+    // two — so drop it here, matched by turn id or by identical text.
+    if (msg.type === 'assistant') {
+      if (typeof msg.__turnId === 'number' && msg.__turnId > 0
+          && nextListAssistantTurnIds.has(msg.__turnId)) {
+        return false;
+      }
+      const text = getAssistantComparableContent(msg);
+      if (text && nextListAssistantTexts.has(text)) {
+        return false;
+      }
+      return true;
+    }
+    // Preserve all other message types (tool results, notifications, …).
     return true;
   });
 
@@ -595,19 +667,34 @@ export const ensureStreamingAssistantInList = (
 ): { list: ClaudeMessage[]; streamingIndex: number } => {
   // Primary path: refs are still valid
   if (isStreaming && streamingTurnId > 0) {
-    const existingIdx = resultList.findIndex(
-      (m) => m.__turnId === streamingTurnId && m.type === 'assistant',
-    );
-    if (existingIdx >= 0) {
-      return { list: resultList, streamingIndex: existingIdx };
-    }
-
     let streamingAssistant: ClaudeMessage | undefined;
     for (let i = prevList.length - 1; i >= 0; i--) {
       if (prevList[i].__turnId === streamingTurnId && prevList[i].type === 'assistant') {
         streamingAssistant = prevList[i];
         break;
       }
+    }
+
+    // Match the current turn's assistant already in the snapshot. Prefer the exact turn-id match;
+    // fall back to a text match only near the end of the list (the backend's persisted copy carries
+    // no __turnId). Text is a weak identity, so bounding it to the tail avoids pointing the
+    // streaming bubble at an older identical-text turn.
+    const streamingText = streamingAssistant ? getAssistantComparableContent(streamingAssistant) : '';
+    let existingIdx = resultList.findIndex(
+      (m) => m.type === 'assistant' && m.__turnId === streamingTurnId,
+    );
+    if (existingIdx < 0 && streamingText) {
+      const windowStart = Math.max(0, resultList.length - 3);
+      for (let i = resultList.length - 1; i >= windowStart; i--) {
+        const m = resultList[i];
+        if (m.type === 'assistant' && getAssistantComparableContent(m) === streamingText) {
+          existingIdx = i;
+          break;
+        }
+      }
+    }
+    if (existingIdx >= 0) {
+      return { list: resultList, streamingIndex: existingIdx };
     }
 
     if (streamingAssistant) {
@@ -623,10 +710,16 @@ export const ensureStreamingAssistantInList = (
   for (let i = prevList.length - 1; i >= 0; i--) {
     const msg = prevList[i];
     if (msg.type === 'assistant' && msg.isStreaming && msg.__turnId && msg.__turnId > 0) {
-      const alreadyPresent = resultList.some((m) => {
+      const msgText = getAssistantComparableContent(msg);
+      const textWindowStart = Math.max(0, resultList.length - 3);
+      const alreadyPresent = resultList.some((m, idx) => {
         if (m.type !== 'assistant') return false;
         if (m.__turnId === msg.__turnId) return true;
         if (msg.timestamp && m.timestamp === msg.timestamp) return true;
+        // Backend copy carries a fresh timestamp and no __turnId — match by text so the finalized
+        // bubble is not appended on top of its persisted copy, but only near the tail so an older
+        // identical-text turn can't suppress recovery of the current one.
+        if (msgText && idx >= textWindowStart && getAssistantComparableContent(m) === msgText) return true;
         return false;
       });
       const assistantAlreadyAtOrAfterPosition =

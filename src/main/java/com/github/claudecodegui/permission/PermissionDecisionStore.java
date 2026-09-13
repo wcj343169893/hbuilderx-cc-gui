@@ -18,23 +18,15 @@ class PermissionDecisionStore {
         if (allow == null) {
             return null;
         }
-        // Security (E): never honor a TOOL-NAME-level "always allow" for command-execution
-        // tools (Bash; Codex shell commands also map to "Bash"; plus Agent launches).
-        // Otherwise approving one benign command would auto-approve every future shell
-        // command this session. A tool-level DENY is still honored (deny is the safe
-        // direction); only the allow shortcut is suppressed, so execution falls through to
-        // the command-scoped (parameter-level) memory and the approval dialog.
-        if (allow && isCommandExecutionTool(toolName)) {
-            return null;
-        }
         return allow
                 ? PermissionService.PermissionResponse.ALLOW_ALWAYS
                 : PermissionService.PermissionResponse.DENY;
     }
 
     /**
-     * Command-execution tools whose "always allow" must be scoped to the exact command
-     * (parameter-level), never the tool name. See getToolDecision.
+     * Command-execution tools (Bash; Codex shell commands also map to "Bash"; plus Agent
+     * launches) whose parameter-level memory key is built from the command string alone.
+     * See buildMemoryKey.
      */
     static boolean isCommandExecutionTool(String toolName) {
         return "Bash".equals(toolName) || "Agent".equals(toolName);
@@ -49,6 +41,14 @@ class PermissionDecisionStore {
     }
 
     String buildMemoryKey(String toolName, JsonObject inputs) {
+        // For command-execution tools, key only on the command string. The rest of the input
+        // (e.g. Bash "description", which the model regenerates every call) is volatile and
+        // would otherwise make a remembered command-level decision almost never match on the
+        // next, differently-described invocation of the very same command.
+        if (isCommandExecutionTool(toolName) && inputs != null
+                && inputs.has("command") && inputs.get("command").isJsonPrimitive()) {
+            return toolName + ":cmd:" + inputs.get("command").getAsString();
+        }
         return toolName + ":" + (inputs != null ? inputs.toString() : "null");
     }
 

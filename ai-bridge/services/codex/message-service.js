@@ -126,6 +126,13 @@ export async function sendMessage(
 
     const codexOptions = {};
 
+    // Always initialize config with reasoning summaries forced to true
+    // so custom models not in the SDK's known-reasoning-model allowlist
+    // still get thinking/reasoning parameters in API requests.
+    codexOptions.config = {
+      model_supports_reasoning_summaries: true
+    };
+
     if (baseUrl) {
       codexOptions.baseUrl = baseUrl;
     }
@@ -134,7 +141,11 @@ export async function sendMessage(
     }
     if (configOverrides && typeof configOverrides === 'object' && !Array.isArray(configOverrides)
         && Object.keys(configOverrides).length > 0) {
-      codexOptions.config = { ...configOverrides };
+      // 必须 merge 而不是赋值：上游在本批次给 config 加了 model_supports_reasoning_summaries
+      // 默认键（让不在 SDK 已知推理模型白名单里的自定义模型也能拿到 thinking 参数）。
+      // 本仓库的单次请求 config 覆盖若整体赋值，会把那个默认键连带抹掉——自定义模型静默失去
+      // reasoning，且无任何报错。同名键仍以 configOverrides 为准。
+      codexOptions.config = { ...codexOptions.config, ...configOverrides };
       logDebug('Codex', 'Provider config override keys:', Object.keys(configOverrides).join(','));
     }
     if (serviceTier && serviceTier.trim() !== '') {

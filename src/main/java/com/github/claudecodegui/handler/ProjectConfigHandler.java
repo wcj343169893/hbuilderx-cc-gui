@@ -704,6 +704,21 @@ public class ProjectConfigHandler {
             "Failed to save task completion notification setting");
     }
 
+    public void handleGetAskUserQuestionNotificationEnabled() {
+        respondWithJson("window.updateAskUserQuestionNotificationEnabled",
+            () -> jsonOf("askUserQuestionNotificationEnabled", settingsService.getAskUserQuestionNotificationEnabled()),
+            jsonOf("askUserQuestionNotificationEnabled", false),
+            "Failed to get ask user question notification enabled");
+    }
+
+    public void handleSetAskUserQuestionNotificationEnabled(String content) {
+        // Default to disabled when payload is missing or the field is absent/null (opt-in feature).
+        handleBooleanToggle(content, "askUserQuestionNotificationEnabled", false, "ask user question notification enabled",
+            settingsService::setAskUserQuestionNotificationEnabled,
+            "window.updateAskUserQuestionNotificationEnabled",
+            "Failed to save ask user question notification setting");
+    }
+
     private void dispatchUiFontConfigUpdate() {
         try {
             String uiFontConfigJson = FontConfigService.getResolvedUiFontConfigJson(settingsService);

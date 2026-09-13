@@ -107,6 +107,60 @@ public class EnvironmentConfiguratorPermissionTimeoutTest {
         assertNull("WSLENV must not be set for a native Windows node", env.get("WSLENV"));
     }
 
+    @Test
+    public void convertWslMountPathToWindowsPath_convertsDriveMountOnWindows() {
+        Assume.assumeTrue("WSL mount repair is only meaningful on Windows", PlatformUtils.isWindows());
+
+        assertEquals("C:\\Users\\foo",
+                EnvironmentConfigurator.convertWslMountPathToWindowsPath("/mnt/c/Users/foo"));
+        assertEquals("D:\\",
+                EnvironmentConfigurator.convertWslMountPathToWindowsPath("/mnt/d"));
+    }
+
+    @Test
+    public void resolveHomeForNodeEnvironment_nativeWindowsNodeRepairsWslMountHome() {
+        Assume.assumeTrue("WSL mount repair is only meaningful on Windows", PlatformUtils.isWindows());
+
+        String home = EnvironmentConfigurator.resolveHomeForNodeEnvironment(
+                "C:\\Program Files\\nodejs\\node.exe",
+                "/mnt/c/Users/foo");
+
+        assertEquals("C:\\Users\\foo", home);
+    }
+
+    @Test
+    public void updateProcessEnvironment_nativeWindowsNodeRepairsPollutedHomeAndCodexHome() {
+        Assume.assumeTrue("WSL mount repair is only meaningful on Windows", PlatformUtils.isWindows());
+
+        EnvironmentConfigurator configurator = new EnvironmentConfigurator(new FakeSettingsService(60));
+        ProcessBuilder pb = new ProcessBuilder("node");
+        Map<String, String> env = pb.environment();
+        env.put("HOME", "/mnt/c/Users/foo");
+        env.put("CODEX_HOME", "/mnt/c/Users/foo/.codex");
+
+        configurator.updateProcessEnvironment(pb, "C:\\Program Files\\nodejs\\node.exe");
+
+        assertEquals("C:\\Users\\foo", env.get("HOME"));
+        assertEquals("C:\\Users\\foo\\.codex", env.get("CODEX_HOME"));
+    }
+
+    @Test
+    public void updateProcessEnvironment_nativeWindowsNodeSetsMissingHomeWithoutWslMount() {
+        Assume.assumeTrue("Native Windows HOME repair is only meaningful on Windows", PlatformUtils.isWindows());
+
+        EnvironmentConfigurator configurator = new EnvironmentConfigurator(new FakeSettingsService(60));
+        ProcessBuilder pb = new ProcessBuilder("node");
+        Map<String, String> env = pb.environment();
+        env.remove("HOME");
+        env.remove("CODEX_HOME");
+
+        configurator.updateProcessEnvironment(pb, "C:\\Program Files\\nodejs\\node.exe");
+
+        assertEquals(PlatformUtils.getHomeDirectory(), env.get("HOME"));
+        assertEquals(PlatformUtils.getHomeDirectory() + "\\.codex", env.get("CODEX_HOME"));
+        assertTrue("HOME must be a native Windows path", !env.get("HOME").startsWith("/mnt/"));
+    }
+
     private static class FakeSettingsService extends CodemossSettingsService {
         private final int timeoutSeconds;
 

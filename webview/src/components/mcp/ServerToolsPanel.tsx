@@ -72,9 +72,12 @@ export function ServerToolsPanel({
           )}
 
           {toolsInfo?.error && (
-            <div className="sidebar-section-header" style={WARNING_HEADER_STYLE}>
-              {t('mcp.loadFailed')}
-            </div>
+            <>
+              <div className="sidebar-section-header" style={WARNING_HEADER_STYLE}>
+                {t('mcp.loadFailed')}
+              </div>
+              <div className="mcp-load-error-detail">{toolsInfo.error}</div>
+            </>
           )}
 
           {toolsInfo?.tools && toolsInfo.tools.length === 0 && (

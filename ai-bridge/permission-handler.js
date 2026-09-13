@@ -44,6 +44,8 @@ export const SAFE_ALWAYS_ALLOW_TOOLS = new Set([
   'Glob',             // Find files by pattern
   'Grep',             // Search file contents
   'Read',             // Read files/images/PDFs
+  'NotebookRead',     // Read Jupyter notebook cells
+  'BashOutput',       // Read output of a background shell (does not run commands)
   'LSP',              // Language server protocol queries
   'ListMcpResourcesTool',   // List MCP resources
   'ReadMcpResourceTool',    // Read MCP resource

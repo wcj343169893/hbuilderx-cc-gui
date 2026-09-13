@@ -86,6 +86,9 @@ public class ClaudeChatWindow {
     private final Object sessionReloadLock = new Object();
     private boolean sessionReloadInFlight = false;
     private boolean sessionReloadPending = false;
+    // A session_updated reload that arrived while a turn was streaming is parked
+    // here and drained at stream end (onStreamEnded). See {@link DeferredReload}.
+    private final DeferredReload deferredReload = new DeferredReload();
 
     private HandlerContext handlerContext;
     private MessageDispatcher messageDispatcher;
@@ -132,6 +135,11 @@ public class ClaudeChatWindow {
             @Override
             public HandlerContext getHandlerContext() {
                 return handlerContext;
+            }
+
+            @Override
+            public void onStreamEnded() {
+                ClaudeChatWindow.this.drainDeferredReload();
             }
         });
 
@@ -658,9 +666,14 @@ public class ClaudeChatWindow {
                         return;
                     }
 
-                    // Check if session has active turn in progress; skip reload if true
+                    // If a turn is streaming, DON'T reload now (clearMessages() off
+                    // the EDT would race the streaming append and disturb the live
+                    // bubble). DON'T drop it either, or a background-turn answer would
+                    // stay invisible until the user reopens the session. Park the id
+                    // and drain it at stream end (onStreamEnded).
                     if (sessionCallbackAdapter != null && streamCoalescer != null && streamCoalescer.isStreamActive()) {
-                        LOG.info("[ClaudeChatWindow] session_updated event received during active turn, skipping reload");
+                        deferredReload.defer(updatedSessionId);
+                        LOG.info("[ClaudeChatWindow] session_updated during active turn, deferring reload to stream end");
                         return;
                     }
 
@@ -710,6 +723,72 @@ public class ClaudeChatWindow {
             sessionReloadInFlight = true;
         }
         driveSessionReload(targetSessionId);
+    }
+
+    /**
+     * Run a session_updated reload that was deferred because a turn was
+     * streaming (see the session_updated handler). Called from the coalescer's
+     * onStreamEnded hook when the stream goes inactive — the safe point to
+     * reload, since SessionState is no longer being mutated by a streaming turn.
+     * A no-op when nothing was deferred. The reload still validates the target
+     * session before touching anything (driveSessionReload), so a session the
+     * user has navigated away from is never reloaded.
+     */
+    private void drainDeferredReload() {
+        String target = deferredReload.takeIfRunnable(disposed);
+        if (target == null) {
+            return;
+        }
+        LOG.info("[ClaudeChatWindow] draining deferred session_updated reload after stream end, sessionId=" + target);
+        requestSessionReload(target);
+    }
+
+    /**
+     * Coordinates a session_updated reload that arrived while a turn was
+     * streaming. Reloading mid-stream is unsafe: {@code loadFromServer()} runs
+     * {@code clearMessages()} on SessionState off the EDT, which would race the
+     * streaming append and disturb the live streaming bubble. So the target
+     * session id is parked here and drained at stream end (onStreamEnded),
+     * making background-turn answers appear at the next turn boundary instead of
+     * only after the user reopens the session.
+     *
+     * <p>Thread-safety: {@code defer} is called from the daemon event thread,
+     * {@code takeIfRunnable} from the coalescer's onStreamEnded hook; both are
+     * fully synchronized so a defer/drain interleave never loses or duplicates a
+     * pending reload. {@code take} atomically reads-clears-and-gates in one
+     * critical section (no read/clear window). Coalescing is last-writer-wins:
+     * overlapping background completions collapse into a single reload, which is
+     * correct because a reload always reflects the latest JSONL. Extracted as a
+     * static nested class so the coordination is unit-testable without a full
+     * ClaudeChatWindow (which needs a Project, JBCefBrowser, etc.).
+     */
+    static final class DeferredReload {
+        private String pendingSessionId;
+
+        /** Park a reload for {@code sessionId} (last writer wins). */
+        synchronized void defer(String sessionId) {
+            this.pendingSessionId = sessionId;
+        }
+
+        /**
+         * Atomically take-and-clear the parked reload, returning its target only
+         * when it should actually run: something was deferred AND the window is
+         * still alive. Returns {@code null} otherwise (and still clears, so a
+         * stale parked id from a disposed window is not left behind). The target
+         * is re-validated against the active session later in
+         * driveSessionReload(), so this only gates the coarse "is there anything
+         * to drain" question.
+         */
+        synchronized String takeIfRunnable(boolean disposed) {
+            String target = pendingSessionId;
+            pendingSessionId = null;
+            return (target != null && !disposed) ? target : null;
+        }
+
+        /** Visible for testing: whether a reload is currently parked. */
+        synchronized boolean hasPending() {
+            return pendingSessionId != null;
+        }
     }
 
     private void driveSessionReload(String targetSessionId) {

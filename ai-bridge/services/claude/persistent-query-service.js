@@ -226,7 +226,7 @@ async function buildRequestContext(params, withAttachments, overrides = {}) {
 
   const userMessage = await buildUserMessage(params, withAttachments, requestedSessionId, resolvedModelId);
 
-  const runtimeSignature = buildRuntimeSignature(options, systemPromptAppend, streamingEnabled, runtimeSessionEpoch);
+  const runtimeSignature = buildRuntimeSignature(options, systemPromptAppend, streamingEnabled, runtimeSessionEpoch, modelId);
   console.log('[LIFECYCLE] buildRequestContext sessionId=' + (requestedSessionId || '(new)')
     + ' epoch=' + (runtimeSessionEpoch || '(none)')
     + ' signature=' + runtimeSignature);
@@ -635,6 +635,30 @@ export async function setPermissionModePersistent(params = {}) {
   if (runtime.currentPermissionMode === targetPermissionMode) {
     log(`setPermissionModePersistent no-op: already ${targetPermissionMode}`
       + ` sessionId=${sessionId || '(none)'} epoch=${epoch || '(none)'}`);
+    return;
+  }
+
+  // Entering or leaving Auto (bypassPermissions) cannot be applied live:
+  // allowDangerouslySkipPermissions is a process-launch argv flag frozen at
+  // spawn, and setPermissionMode() (a control request) can neither add nor
+  // remove it. Calling setPermissionMode here would log "applied" while the
+  // subprocess keeps prompting (or keeps skipping, when leaving Auto). So for a
+  // bypass-bit change, DON'T call setPermissionMode — invalidate the runtime
+  // signature so the next send_message rebuilds the runtime with the correct
+  // launch flag (mirrors buildRuntimeSignature's bypassPermissions bit). Update
+  // local state so the intent is recorded; the rebuild spawns fresh regardless.
+  const bypassBitChanged =
+    (targetPermissionMode === 'bypassPermissions')
+      !== (runtime.currentPermissionMode === 'bypassPermissions');
+  if (bypassBitChanged) {
+    runtime.runtimeSignature = '__rebuild-pending-bypass-change__';
+    runtime.currentPermissionMode = targetPermissionMode;
+    if (runtime.permissionModeState) {
+      runtime.permissionModeState.value = targetPermissionMode;
+    }
+    log(`setPermissionModePersistent: bypass bit changed to ${targetPermissionMode};`
+      + ` runtime marked for rebuild on next send sessionId=${sessionId || '(none)'}`
+      + ` epoch=${epoch || '(none)'}`);
     return;
   }
 

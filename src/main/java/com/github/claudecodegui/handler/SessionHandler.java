@@ -415,32 +415,20 @@ public class SessionHandler extends BaseMessageHandler {
     private String determineWorkingDirectory() {
         String projectPath = context.getProject().getBasePath();
 
-        // Prefer the user-configured working directory first
-        // (relative paths are resolved only when projectPath is valid).
+        // Prefer the user-configured working directory first, normalized so that
+        // relative segments (e.g. "..") are collapsed. This must match the directory
+        // history is stored under (see WorkingDirectoryManager#resolveEffectiveWorkingDirectory).
         if (projectPath != null && new File(projectPath).exists()) {
             try {
                 com.github.claudecodegui.settings.CodemossSettingsService settingsService =
                         new com.github.claudecodegui.settings.CodemossSettingsService();
-                String customWorkingDir = settingsService.getCustomWorkingDirectory(projectPath);
-
-                if (customWorkingDir != null && !customWorkingDir.isEmpty()) {
-                    // Resolve relative paths against the project root.
-                    File workingDirFile = new File(customWorkingDir);
-                    if (!workingDirFile.isAbsolute()) {
-                        workingDirFile = new File(projectPath, customWorkingDir);
-                    }
-
-                    // Validate that the directory exists.
-                    if (workingDirFile.exists() && workingDirFile.isDirectory()) {
-                        String resolvedPath = workingDirFile.getAbsolutePath();
-                        LOG.info("[SessionHandler] Using custom working directory: " + resolvedPath);
-                        return resolvedPath;
-                    } else {
-                        LOG.warn("[SessionHandler] Custom working directory does not exist: " + workingDirFile.getAbsolutePath() + ", falling back");
-                    }
+                String resolvedPath = settingsService.getEffectiveWorkingDirectory(projectPath);
+                if (resolvedPath != null && !resolvedPath.isEmpty()) {
+                    LOG.info("[SessionHandler] Using working directory: " + resolvedPath);
+                    return resolvedPath;
                 }
             } catch (Exception e) {
-                LOG.warn("[SessionHandler] Failed to read custom working directory: " + e.getMessage());
+                LOG.warn("[SessionHandler] Failed to resolve working directory: " + e.getMessage());
             }
         }
 

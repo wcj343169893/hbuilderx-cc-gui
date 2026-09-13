@@ -6,6 +6,7 @@ import ProviderManageSection from '../ProviderManageSection';
 import CodexProviderSection from '../CodexProviderSection';
 import CustomModelDialog from '../CustomModelDialog';
 import { usePluginModels } from '../hooks/usePluginModels';
+import { useConfiguredClaudeModelPricing } from '../hooks/useConfiguredModelPricing';
 import styles from './style.module.less';
 
 const BLOCK_STYLE: React.CSSProperties = { display: 'block' };
@@ -60,6 +61,7 @@ const ProviderTabSection = ({
   // Plugin-level custom model management
   const claudeModels = usePluginModels(STORAGE_KEYS.CLAUDE_CUSTOM_MODELS);
   const codexModels = usePluginModels(STORAGE_KEYS.CODEX_CUSTOM_MODELS);
+  const claudeConfiguredModelPricing = useConfiguredClaudeModelPricing(claudeModels.models);
 
   // Dialog state
   const [modelDialogOpen, setModelDialogOpen] = useState(false);
@@ -184,6 +186,12 @@ const ProviderTabSection = ({
         isOpen={modelDialogOpen}
         models={activeModels.models}
         onModelsChange={activeModels.updateModels}
+        configuredModels={dialogTarget === 'claude' ? claudeConfiguredModelPricing.configuredModels : []}
+        onConfiguredModelPricingChange={
+          dialogTarget === 'claude'
+            ? claudeConfiguredModelPricing.updateConfiguredModelPricing
+            : undefined
+        }
         onClose={closeModelDialog}
         initialAddMode={modelDialogAddMode}
       />

@@ -201,7 +201,14 @@ export function useModelStatePersistence(options: UseModelStatePersistenceOption
             ? restoredCodexModel
             : apply1MContextSuffix(restoredClaudeModel, restoredLongContextEnabled);
           sendBridgeEvent('set_model', modelToSync);
-          sendBridgeEvent('set_mode', initialPermissionMode);
+          // Do NOT push the permission mode to Java on boot. Java is the source
+          // of truth for the mode (persisted app-level in PropertiesComponent,
+          // which survives a plugin reinstall) and the webview seeds its own mode
+          // FROM Java via get_mode → onModeReceived. Our localStorage copy is
+          // wiped on reinstall, so pushing it here would clobber the surviving
+          // Java value with 'default' — the reported "reinstall forgets Auto" bug.
+          // The mode is only sent to Java on an explicit user switch
+          // (handleModeSelect → set_mode).
           sendBridgeEvent('set_codex_fast_mode', restoredCodexFastMode);
         } else {
           syncRetryCount++;

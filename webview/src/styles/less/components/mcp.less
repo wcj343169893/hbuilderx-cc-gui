@@ -2197,3 +2197,541 @@
     font-size: 11px;
     color: var(--text-tertiary);
 }
+
+/* MCP Marketplace Browser */
+.mcp-marketplace-dialog {
+    width: min(960px, 92vw);
+    height: min(720px, 88vh);
+}
+
+.mcp-marketplace-dialog .dialog-header h3 {
+    margin: 0;
+}
+
+.marketplace-subtitle {
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    font-weight: 400;
+}
+
+.marketplace-body {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    height: 100%;
+}
+
+.marketplace-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.marketplace-search-box {
+    display: flex;
+    align-items: center;
+    flex: 1;
+    min-width: 0;
+    gap: 8px;
+    padding: 0 10px;
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+}
+
+.marketplace-search-box input {
+    flex: 1;
+    min-width: 0;
+    height: 34px;
+    border: none;
+    outline: none;
+    background: transparent;
+    color: var(--text-primary);
+    font-size: 13px;
+}
+
+.marketplace-source-select,
+.marketplace-install-select {
+    height: 36px;
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    font-size: 13px;
+    padding: 0 8px;
+}
+
+.marketplace-source-select {
+    max-width: 220px;
+}
+
+.marketplace-error {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+    padding: 8px 10px;
+    border: 1px solid var(--color-warning);
+    border-radius: 6px;
+    color: var(--color-warning);
+    background: var(--bg-secondary);
+    font-size: 12px;
+}
+
+.marketplace-content {
+    display: grid;
+    grid-template-columns: minmax(320px, 1fr) minmax(320px, 0.9fr);
+    gap: 12px;
+    min-height: 0;
+    flex: 1;
+}
+
+.marketplace-list,
+.marketplace-details {
+    min-height: 0;
+    overflow-y: auto;
+    border: 1px solid var(--border-primary);
+    border-radius: 8px;
+    background: var(--bg-secondary);
+}
+
+.marketplace-list {
+    display: flex;
+    flex-direction: column;
+    padding: 8px;
+    gap: 8px;
+}
+
+.marketplace-entry {
+    display: flex;
+    gap: 10px;
+    padding: 10px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    cursor: pointer;
+    background: var(--bg-primary);
+}
+
+.marketplace-entry:hover,
+.marketplace-entry.selected {
+    border-color: var(--accent-primary);
+    background: var(--bg-hover);
+}
+
+.marketplace-entry-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 32px;
+    width: 32px;
+    height: 32px;
+    border-radius: 6px;
+    background: var(--accent-primary);
+    color: var(--text-white);
+    font-weight: 600;
+}
+
+.marketplace-entry-info {
+    min-width: 0;
+    flex: 1;
+}
+
+.marketplace-entry-title-row,
+.marketplace-details-title-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+.marketplace-entry-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.marketplace-pill,
+.marketplace-source-badge,
+.marketplace-risk {
+    flex-shrink: 0;
+    padding: 2px 6px;
+    border-radius: 10px;
+    font-size: 10px;
+    line-height: 1.3;
+    border: 1px solid var(--border-primary);
+    color: var(--text-secondary);
+    background: var(--bg-secondary);
+}
+
+.marketplace-pill.official {
+    color: var(--accent-primary);
+    border-color: var(--accent-primary);
+}
+
+.marketplace-pill.installable {
+    color: var(--color-success);
+    border-color: var(--color-success);
+}
+
+.marketplace-entry-description {
+    margin-top: 4px;
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.4;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.marketplace-entry-meta {
+    display: flex;
+    gap: 10px;
+    margin-top: 6px;
+    color: var(--text-tertiary);
+    font-size: 11px;
+}
+
+.marketplace-details {
+    padding: 14px;
+}
+
+.marketplace-details-card h4 {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 16px;
+}
+
+.marketplace-details-name {
+    margin-top: 4px;
+    color: var(--text-tertiary);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+}
+
+.marketplace-details-description {
+    color: var(--text-secondary);
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.marketplace-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 10px 0;
+}
+
+.marketplace-link-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 10px 0 14px;
+}
+
+.marketplace-link-grid a {
+    color: var(--accent-primary);
+    text-decoration: none;
+    font-size: 12px;
+}
+
+.marketplace-option-label {
+    display: block;
+    margin-bottom: 6px;
+    color: var(--text-primary);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.marketplace-install-select {
+    width: 100%;
+    margin-bottom: 10px;
+}
+
+.marketplace-install-preview {
+    border: 1px solid var(--border-primary);
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--bg-primary);
+}
+
+.marketplace-preview-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 10px;
+    color: var(--text-primary);
+    border-bottom: 1px solid var(--border-primary);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.marketplace-preview-header .marketplace-risk {
+    margin-left: auto;
+}
+
+.marketplace-install-preview pre {
+    margin: 0;
+    padding: 10px;
+    max-height: 220px;
+    overflow: auto;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-primary);
+}
+
+.marketplace-no-install,
+.marketplace-details-empty,
+.marketplace-loading,
+.marketplace-empty {
+    padding: 24px;
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+
+.marketplace-footer {
+    align-items: center;
+}
+
+@media (max-width: 760px) {
+    .marketplace-content {
+        grid-template-columns: 1fr;
+    }
+
+    .marketplace-toolbar {
+        flex-wrap: wrap;
+    }
+
+    .marketplace-source-select {
+        max-width: none;
+        flex: 1;
+    }
+}
+
+/* MCP Import (GitHub Copilot config) */
+.mcp-import-dialog {
+    width: min(720px, 92vw);
+    height: min(680px, 88vh);
+}
+
+.mcp-import-dialog .dialog-header h3 {
+    margin: 0;
+}
+
+.mcp-import-subtitle {
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    font-weight: 400;
+}
+
+.mcp-import-body {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    height: 100%;
+    gap: 10px;
+}
+
+.mcp-import-textarea {
+    width: 100%;
+    min-height: 160px;
+    resize: vertical;
+    padding: 10px;
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.5;
+    outline: none;
+}
+
+.mcp-import-actions-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.mcp-import-rename-hint {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.mcp-import-error {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border: 1px solid var(--color-warning);
+    border-radius: 6px;
+    color: var(--color-warning);
+    background: var(--bg-secondary);
+    font-size: 12px;
+}
+
+.mcp-import-preview {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 8px;
+    border: 1px solid var(--border-primary);
+    border-radius: 8px;
+    background: var(--bg-secondary);
+}
+
+.mcp-import-empty {
+    padding: 24px;
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+
+.mcp-import-preview-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary);
+    padding: 2px 4px;
+}
+
+.mcp-import-item {
+    display: flex;
+    gap: 10px;
+    padding: 10px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: var(--bg-primary);
+}
+
+.mcp-import-item-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 32px;
+    width: 32px;
+    height: 32px;
+    border-radius: 6px;
+    background: var(--accent-primary);
+    color: var(--text-white);
+    font-weight: 600;
+}
+
+.mcp-import-item-info {
+    min-width: 0;
+    flex: 1;
+}
+
+.mcp-import-item-title-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.mcp-import-item-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.mcp-import-type-badge,
+.mcp-import-renamed {
+    flex-shrink: 0;
+    padding: 2px 6px;
+    border-radius: 10px;
+    font-size: 10px;
+    line-height: 1.3;
+    border: 1px solid var(--border-primary);
+    color: var(--text-secondary);
+    background: var(--bg-secondary);
+}
+
+.mcp-import-renamed {
+    color: var(--color-warning);
+    border-color: var(--color-warning);
+}
+
+.mcp-import-item-id {
+    margin-top: 4px;
+    color: var(--text-tertiary);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+}
+
+.mcp-import-item-cmd {
+    margin-top: 4px;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+}
+
+.mcp-import-footer {
+    align-items: center;
+}
+
+/* Prominent warning for marketplace options that run a local command/container */
+.marketplace-risk-warning {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+    padding: 8px 10px;
+    border: 1px solid var(--color-warning);
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--color-warning) 12%, transparent);
+    color: var(--color-warning);
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+.marketplace-risk-warning.severe {
+    border-color: var(--color-error, #e5484d);
+    color: var(--color-error, #e5484d);
+    background: color-mix(in srgb, var(--color-error, #e5484d) 12%, transparent);
+    font-weight: 600;
+}
+
+/* Full server spec shown in the Copilot import preview (reveals env/headers) */
+.mcp-import-item-spec {
+    margin: 6px 0 0;
+    padding: 8px;
+    max-height: 200px;
+    overflow: auto;
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    background: var(--bg-primary);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--text-primary);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+/* Concrete tool-load failure reason under the "Load failed" header */
+.mcp-load-error-detail {
+    padding: 4px 12px 8px;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}

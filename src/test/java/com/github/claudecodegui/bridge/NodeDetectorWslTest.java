@@ -280,7 +280,8 @@ public class NodeDetectorWslTest {
         Assume.assumeTrue("Skipped: not running on Windows", System.getProperty("os.name", "").toLowerCase().contains("windows"));
         String home = NodeDetector.resolveHomeForFileOps("C:\\Program Files\\nodejs\\node.exe");
         assertEquals(PlatformUtils.getHomeDirectory(), home);
-        assertFalse("Native node must not resolve into the WSL UNC home", home.startsWith("//"));
+        assertFalse("Native node must not resolve into the WSL UNC home",
+                home.startsWith("\\\\") || home.startsWith("//"));
     }
 
     @Test
@@ -290,7 +291,11 @@ public class NodeDetectorWslTest {
         Assume.assumeTrue("Skipped: WSL not available", unc != null && !unc.isEmpty());
 
         String home = NodeDetector.resolveHomeForFileOps("/usr/bin/node");
-        assertTrue("WSL node must resolve to the //wsl home", home.startsWith("//"));
+        // Must be the backslash UNC form (\\wsl.localhost\...): the forward-slash form
+        // (//wsl.localhost/...) collapses to a drive-relative path in Paths.get(...) on a
+        // Windows JVM, breaking every ~/.claude file scan.
+        assertTrue("WSL node must resolve to the \\\\wsl UNC home", home.startsWith("\\\\"));
+        assertFalse("WSL home must not be the forward-slash UNC form", home.startsWith("//"));
         assertFalse("WSL home must not be a drive-letter path", home.matches("(?i)[A-Z]:.*"));
     }
 }

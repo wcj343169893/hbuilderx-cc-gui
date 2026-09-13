@@ -84,7 +84,7 @@ export function createTurnSink() {
   };
 }
 
-export function buildRuntimeSignature(options, systemPromptAppend, streamingEnabled, runtimeSessionEpoch) {
+export function buildRuntimeSignature(options, systemPromptAppend, streamingEnabled, runtimeSessionEpoch, modelId) {
   const material = {
     cwd: options.cwd || '',
     additionalDirectories: options.additionalDirectories || [],
@@ -93,10 +93,25 @@ export function buildRuntimeSignature(options, systemPromptAppend, streamingEnab
     runtimeSessionEpoch: runtimeSessionEpoch || '',
     model: options.model || '',
     effort: options.effort || '',
-    // permissionMode 一般可用 setPermissionMode 动态切换，故不入签名；唯独 bypassPermissions
-    // 依赖 spawn 时的 --allow-dangerously-skip-permissions 标志（无法事后补），所以把该标志
-    // 纳入签名：进/出「自动模式」时签名变化 → 重建 runtime，确保 spawn 标志与当前模式一致。
-    allowDangerouslySkipPermissions: !!options.allowDangerouslySkipPermissions
+    // 注：本仓库原先在此处用 allowDangerouslySkipPermissions 表达同一件事（进出自动模式要重建
+    // runtime，因为该标志是 spawn 期 argv、事后 setPermissionMode 补不上）。上游的
+    // bypassPermissions 直接看 permissionMode，与我们 buildQueryOptions 的置位条件等价且更直接，
+    // 故取上游写法，本仓库那一条删除，避免同一语义两份签名字段。
+    // The [1m] suffix selects the 1M context window. The CLI subprocess locks
+    // the window in at spawn from its environment, and setModel() cannot change
+    // it afterwards (see shouldRecreateRuntimeForModel) — so toggling [1m] must
+    // change the signature and rebuild the runtime instead of reusing it.
+    contextWindow1M: (modelId || '').includes('[1m]'),
+    // bypassPermissions (Auto mode) requires allowDangerouslySkipPermissions,
+    // which the SDK passes as a process-launch argv flag — it is frozen at spawn
+    // and setPermissionMode() (a runtime control request) cannot add it to a
+    // live subprocess. So a runtime spawned in another mode keeps prompting via
+    // canUseTool even after switching to Auto. Put the bypass state in the
+    // signature so entering/leaving Auto rebuilds the runtime with the correct
+    // launch flag. The other modes (default/plan/acceptEdits) need no launch
+    // flag and keep applying live via setPermissionMode, so they intentionally
+    // do NOT change the signature.
+    bypassPermissions: options.permissionMode === 'bypassPermissions'
   };
   return JSON.stringify(material);
 }
@@ -194,6 +209,7 @@ async function createRuntime(requestContext, callbacks) {
     runtimeSignature: requestContext.runtimeSignature,
     currentModel: requestContext.sdkModelName || null,
     modelId: requestContext.modelId || null, // Original model ID, may contain [1m] suffix
+    currentResolvedModel: requestContext.resolvedModelId || null,
     currentPermissionMode: initialPermissionMode,
     permissionModeState: { value: initialPermissionMode },
     currentMaxThinkingTokens: requestContext.maxThinkingTokens ?? null,
@@ -441,10 +457,21 @@ async function applyDynamicControls(runtime, requestContext) {
   }
 
   const targetModel = requestContext.sdkModelName || null;
-  if (runtime.currentModel !== targetModel && typeof runtime.query?.setModel === 'function') {
+  const targetResolvedModel = requestContext.resolvedModelId || null;
+  // Compare both the SDK short name AND the resolved model ID: a settings-side
+  // remap (e.g. sonnet -> "MiniMax-M2.5") changes only the resolved ID.
+  // Pass the resolved ID to setModel, not the short name: the CLI subprocess
+  // resolves short names against its OWN environment, which was frozen at spawn
+  // time — the daemon-side env update in setModelEnvironmentVariables never
+  // reaches a live subprocess. The resolved ID needs no env lookup. ([1m]
+  // toggles never get here: they change the runtime signature, so acquireRuntime
+  // rebuilds the runtime instead of reusing it.)
+  if ((runtime.currentModel !== targetModel || runtime.currentResolvedModel !== targetResolvedModel)
+      && typeof runtime.query?.setModel === 'function') {
     try {
-      await runtime.query.setModel(targetModel || undefined);
+      await runtime.query.setModel(targetResolvedModel || targetModel || undefined);
       runtime.currentModel = targetModel;
+      runtime.currentResolvedModel = targetResolvedModel;
     } catch (error) {
       console.error('[DAEMON] setModel failed:', error.message);
     }

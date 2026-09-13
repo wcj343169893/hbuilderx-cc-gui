@@ -1,5 +1,6 @@
 package com.github.claudecodegui.skill;
 
+import com.github.claudecodegui.bridge.NodeDetector;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -297,6 +298,20 @@ final class PluginCommandScanner {
         String installPath = installPathElement.getAsString();
         if (installPath == null || installPath.trim().isEmpty()) {
             return null;
+        }
+
+        // installed_plugins.json stores Linux paths (e.g. /home/user/.claude/plugins/...).
+        // On a Windows host driving a WSL project, Paths.get("/home/...") resolves against
+        // the current drive (C:\home\...), which does not exist, so every plugin's
+        // skills/commands subdir gets rejected by the toRealPath() safety check. Convert to
+        // the \\wsl.localhost\<distro>\... UNC form so file ops hit the WSL filesystem.
+        // isWslPath() is false on non-Windows hosts, so native Linux/macOS installs are
+        // unaffected.
+        if (NodeDetector.isWslPath(installPath)) {
+            String unc = NodeDetector.convertWslPathToWindowsUnc(installPath);
+            if (unc != null && !unc.isEmpty()) {
+                installPath = unc;
+            }
         }
 
         String version = versionObj.has("version") && versionObj.get("version").isJsonPrimitive()

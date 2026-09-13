@@ -1,0 +1,166 @@
+package com.github.claudecodegui.ui.toolwindow;
+
+import org.junit.Test;
+
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
+
+/**
+ * Tests for {@link ClaudeChatWindow.DeferredReload} — the coordinator that
+ * parks a session_updated reload arriving during an active stream and drains it
+ * at stream end.
+ *
+ * <p>Why this matters: reloading mid-stream runs {@code clearMessages()} on
+ * SessionState off the EDT, racing the streaming append and disturbing the live
+ * bubble; dropping the reload instead leaves a background-turn answer invisible
+ * until the user reopens the session. This coordinator is the fix, so its
+ * park / take-and-clear / gate / coalescing / thread-safety semantics are
+ * pinned down here.
+ */
+public class DeferredReloadTest {
+
+    // ── Park + take-and-clear ────────────────────────────────────────────────
+
+    @Test
+    public void deferThenTakeReturnsTargetAndClears() {
+        ClaudeChatWindow.DeferredReload d = new ClaudeChatWindow.DeferredReload();
+        assertFalse("nothing parked initially", d.hasPending());
+
+        d.defer("session-A");
+        assertTrue("defer parks a pending reload", d.hasPending());
+
+        assertEquals("take returns the parked target", "session-A", d.takeIfRunnable(false));
+        assertFalse("take clears the parked reload", d.hasPending());
+    }
+
+    @Test
+    public void secondTakeAfterDrainReturnsNull() {
+        ClaudeChatWindow.DeferredReload d = new ClaudeChatWindow.DeferredReload();
+        d.defer("session-A");
+        d.takeIfRunnable(false);
+
+        assertNull("a second drain with nothing parked returns null", d.takeIfRunnable(false));
+    }
+
+    @Test
+    public void takeWithNothingDeferredReturnsNull() {
+        ClaudeChatWindow.DeferredReload d = new ClaudeChatWindow.DeferredReload();
+        assertNull("draining an empty coordinator is a no-op", d.takeIfRunnable(false));
+    }
+
+    // ── Coalescing (last writer wins) ────────────────────────────────────────
+
+    @Test
+    public void overlappingDefersCollapseToLatest() {
+        // Several background completions arriving during one stream must collapse
+        // into a single reload reflecting the latest JSONL — not a burst of reloads.
+        ClaudeChatWindow.DeferredReload d = new ClaudeChatWindow.DeferredReload();
+        d.defer("session-A");
+        d.defer("session-B");
+        d.defer("session-C");
+
+        assertEquals("last writer wins", "session-C", d.takeIfRunnable(false));
+        assertFalse("all coalesced into one drain", d.hasPending());
+    }
+
+    // ── Disposed gate ────────────────────────────────────────────────────────
+
+    @Test
+    public void takeWhenDisposedReturnsNullButStillClears() {
+        // A disposed window must not run the reload — but the parked id must not
+        // be left behind either, or a later drain on a reused coordinator could
+        // resurrect it.
+        ClaudeChatWindow.DeferredReload d = new ClaudeChatWindow.DeferredReload();
+        d.defer("session-A");
+
+        assertNull("disposed window does not run the deferred reload", d.takeIfRunnable(true));
+        assertFalse("disposed take still clears the parked reload", d.hasPending());
+    }
+
+    @Test
+    public void deferAfterDisposedTakeCanStillRunWhenAlive() {
+        // Defensive: a fresh defer after a disposed-drain is independent.
+        ClaudeChatWindow.DeferredReload d = new ClaudeChatWindow.DeferredReload();
+        d.defer("stale");
+        d.takeIfRunnable(true); // disposed → dropped
+
+        d.defer("fresh");
+        assertEquals("a new defer is independent of the prior disposed drain",
+                "fresh", d.takeIfRunnable(false));
+    }
+
+    // ── Thread-safety: concurrent defer/take never loses or duplicates ───────
+
+    @Test
+    public void concurrentDeferAndTakeNeverLosesOrDuplicates() throws InterruptedException {
+        // Model the real interleave: the daemon event thread defers while the
+        // stream-end hook drains. Invariant: every id that is ever taken was
+        // deferred, and no id is taken twice. (Coalescing means not every
+        // deferred id is taken — that's fine; we assert no phantom/duplicate.)
+        final ClaudeChatWindow.DeferredReload d = new ClaudeChatWindow.DeferredReload();
+        final int rounds = 20_000;
+        final ConcurrentHashMap<String, Integer> takenCounts = new ConcurrentHashMap<>();
+        final AtomicInteger deferSeq = new AtomicInteger();
+        final CountDownLatch start = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(3);
+
+        Runnable deferrer = () -> {
+            awaitQuietly(start);
+            for (int i = 0; i < rounds; i++) {
+                d.defer("s" + deferSeq.incrementAndGet());
+            }
+        };
+        Runnable drainer = () -> {
+            awaitQuietly(start);
+            for (int i = 0; i < rounds; i++) {
+                String t = d.takeIfRunnable(false);
+                if (t != null) {
+                    takenCounts.merge(t, 1, Integer::sum);
+                }
+            }
+        };
+
+        pool.submit(deferrer);
+        pool.submit(deferrer);
+        pool.submit(drainer);
+        start.countDown();
+        pool.shutdown();
+        assertTrue("workers finished", pool.awaitTermination(30, TimeUnit.SECONDS));
+
+        // Final drain to flush any last parked id.
+        String tail = d.takeIfRunnable(false);
+        if (tail != null) {
+            takenCounts.merge(tail, 1, Integer::sum);
+        }
+
+        // No id taken more than once (atomic take-and-clear).
+        for (var e : takenCounts.entrySet()) {
+            assertEquals("id " + e.getKey() + " must not be taken twice", Integer.valueOf(1), e.getValue());
+        }
+        // Every taken id was within the deferred range (no phantom ids).
+        int maxDeferred = deferSeq.get();
+        for (String id : takenCounts.keySet()) {
+            int n = Integer.parseInt(id.substring(1));
+            assertTrue("taken id " + id + " must be a real deferred id (<= " + maxDeferred + ")",
+                    n >= 1 && n <= maxDeferred);
+        }
+        assertFalse("coordinator is drained at the end", d.hasPending());
+    }
+
+    private static void awaitQuietly(CountDownLatch latch) {
+        try {
+            latch.await();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+}

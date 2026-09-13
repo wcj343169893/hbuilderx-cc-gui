@@ -53,6 +53,7 @@ export interface SettingsWindowCallbacksDeps {
   setAiTitleGenerationEnabled?: (enabled: boolean) => void;
   setStatusBarWidgetEnabled?: (enabled: boolean) => void;
   setTaskCompletionNotificationEnabled?: (enabled: boolean) => void;
+  setAskUserQuestionNotificationEnabled?: (enabled: boolean) => void;
   // Sound notification setters
   setSoundNotificationEnabled?: (enabled: boolean) => void;
   setSoundOnlyWhenUnfocused?: (enabled: boolean) => void;
@@ -367,6 +368,16 @@ export function useSettingsWindowCallbacks(deps: SettingsWindowCallbacksDeps) {
       }
     };
 
+    // AskUserQuestion reminder notification config callback (opt-in feature, default false)
+    window.updateAskUserQuestionNotificationEnabled = (jsonStr: string) => {
+      try {
+        const data = JSON.parse(jsonStr);
+        d().setAskUserQuestionNotificationEnabled?.(data.askUserQuestionNotificationEnabled ?? false);
+      } catch (error) {
+        console.error('[SettingsView] Failed to parse ask user question notification config:', error);
+      }
+    };
+
     // Sound notification config callback
     window.updateSoundNotificationConfig = (jsonStr: string) => {
       try {
@@ -528,6 +539,7 @@ export function useSettingsWindowCallbacks(deps: SettingsWindowCallbacksDeps) {
     sendToJava('get_ai_title_generation_enabled:');
     sendToJava('get_status_bar_widget_enabled:');
     sendToJava('get_task_completion_notification_enabled:');
+    sendToJava('get_ask_user_question_notification_enabled:');
     sendToJava('get_permission_dialog_timeout:');
 
     return () => {
@@ -565,6 +577,7 @@ export function useSettingsWindowCallbacks(deps: SettingsWindowCallbacksDeps) {
       window.updateAiTitleGenerationEnabled = undefined;
       window.updateStatusBarWidgetEnabled = undefined;
       window.updateTaskCompletionNotificationEnabled = undefined;
+      window.updateAskUserQuestionNotificationEnabled = undefined;
       window.updateAgents = previousUpdateAgents;
       window.agentOperationResult = undefined;
       window.agentImportPreviewResult = undefined;
