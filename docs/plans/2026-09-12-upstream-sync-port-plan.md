@@ -87,8 +87,8 @@ git merge up-v0.4.7                # 解冲突 → 补后端 → 验收 → 合�
 | 批次 | 上游版本 | 规模（webview/ai-bridge/java 文件） | 主要新功能 | 需新增的 HBuilderX 后端 |
 |---|---|---|---|---|
 | B0 | —（前置） | — | **已完成（2026-09-13）**：清理现存 26 个契约缺口；修 3 项既有测试失败（`ModelSelect` 单测过时、e2e `resume-replay` 幽灵气泡、测试目录 tsc 类型错误，详见 `docs/plans/2026-09-12-known-test-failures.md`）；基线全绿后把契约校验 + webview 单测 + e2e 接入 `.github/workflows/hbuilderx-ci.yml` | 26 个 case（详见 3.4，已全部实现或登记白名单） |
-| B1 | v0.4.6 | 54/23/38 | 权限模式热切换；**安全加固组**（默认 `default` 模式、PreToolUse 对 Bash/Agent 返回 `ask`、拦截 `NODE_OPTIONS`/`LD_PRELOAD`/`DYLD_*`、"始终允许"收敛到命令级、MCP stdio 元字符拒绝、`npm install --ignore-scripts`、配置文件 0600、危险路径检查扩展到 Bash 串与 `~`、Codex 沙箱默认 `workspace-write`） | `permission-bridge.js` / `permission-safety.js` 对齐；`dependency-service.js` 加 `--ignore-scripts`；配置写入权限 0600 |
-| B2 | v0.4.7 (+fix1/fix2) | 49/14/76 | MCP Marketplace（内置/官方 Registry/GitHub Registry 多源 + 磁盘缓存）；从 Copilot 配置导入 MCP；自定义模型自定义单价；AskUserQuestion 通知开关；消息尾部「详细输出」开关；GPT-5.6 Sol/Terra/Luna（本仓库已自行实现，合并时以上游实现为准） | `mcp-marketplace-service.js`（对应 `McpMarketplaceService` + 4 个 client）、`mcp-service.js` 扩展导入能力、`model-pricing-service.js`；case：`get_mcp_marketplace_sources`、`search_mcp_marketplace`、`parse_copilot_mcp_config`、`set_custom_model_pricing` |
+| B1 ✅ | v0.4.6 | 54/23/38 | 权限模式热切换；**安全加固组**（默认 `default` 模式、PreToolUse 对 Bash/Agent 返回 `ask`、拦截 `NODE_OPTIONS`/`LD_PRELOAD`/`DYLD_*`、"始终允许"收敛到命令级、MCP stdio 元字符拒绝、`npm install --ignore-scripts`、配置文件 0600、危险路径检查扩展到 Bash 串与 `~`、Codex 沙箱默认 `workspace-write`） | `permission-bridge.js` / `permission-safety.js` 对齐；`dependency-service.js` 加 `--ignore-scripts`；配置写入权限 0600 |
+| B2 ✅ | v0.4.7 | 49/14/76 | MCP Marketplace（内置/官方 Registry/GitHub Registry 多源 + 磁盘缓存）；从 Copilot 配置导入 MCP；自定义模型自定义单价；AskUserQuestion 通知开关；消息尾部「详细输出」开关；GPT-5.6 Sol/Terra/Luna（本仓库已自行实现，合并时以上游实现为准） | `mcp-marketplace-service.js`（对应 `McpMarketplaceService` + 4 个 client）、`mcp-service.js` 扩展导入能力、`model-pricing-service.js`；case：`get_mcp_marketplace_sources`、`search_mcp_marketplace`、`parse_copilot_mcp_config`、`set_custom_model_pricing` |
 | B3 | v0.4.8 | 102/27/93 | 异步子代理生命周期跟踪（时长/token/用量，不再卡在 running）；Fable 档位贯通；Codex GPT-5.6 max reasoning 与模型别名 | `history-service.js` 分页：`load_codex_history_page`；子代理状态上报链路 |
 | B4 | v0.4.9 | 220/3/76 | **TokenTracker 用量仪表盘（完整移植）**；MCP Claude/Codex 分页隔离；Codex provider 从 cc-switch 导入 + OpenAI 直连/预设大扩充；KaTeX 数学公式渲染；`/goal`；Codex skill 递归发现；SDK ≥0.3.182 校验。（Codex Pet 从本批次**移出**，见 B11） | **最重的一批**。`tokentracker-gateway.js`（探测/安装 `tokentracker-cli`、挑空闲端口串行起服、白名单转发 `tt_proxy`）+ **仪表盘独立 webview 入口**（`usage.html`，按需创建，不进主面板单文件）；`update_codex_mcp_server`；Codex cc-switch 导入 3 个 case。验收加一条：主面板 HTML 体积与 B3 持平 |
 | B5 | v0.5 | 133/36/70 | **多 CLI 引擎第一波：Grok / Kimi / OpenCode / PI**（`ai-bridge` 新增 4 个 channel + 对应 service 目录）；Grok 常驻多轮 ACP daemon；Grok 500k 上下文环；Codex 自定义模型上下文窗口；Codex 从 `config.toml`/catalog 取模型；`@file` 可点击引用；通知声音 + 仅失焦时通知；Commit AI 流式；输入栏主题色 | CLI 探测与模型发现：`cli-status-service.js`（对应 `CliStatusDetector`）、`cli-models-service.js`；case：`get_cli_status`、`get_cli_models`、`set_system_notification_only_when_unfocused`、`set_ask_user_question_sound_notification_enabled`、`surface_damage_applied`、`history_dom_committed`；Commit AI 先做 spike（有 API 则按上游；无则降级为面板内流式 + 复制到剪贴板，diff 走本地 git 命令） |
@@ -100,6 +100,53 @@ git merge up-v0.4.7                # 解冲突 → 补后端 → 验收 → 合�
 | B11 | —（本仓库自有） | — | **Codex Pet 重做**：webview 内精灵图渲染器 + 宿主资产服务（本地宠物 → petdex 安装 → hatch 孵化） | `codex-pet-service.js` + 16 个 pet case；详见 `docs/plans/2026-09-12-codex-pet-hbuilderx-design.md` |
 
 > 规模列是该 tag 相对上一个 tag 的改动文件数，用于排期参考，不等于工作量。
+
+### 3.3.1 执行记录与对本方案的勘误（随批次滚动更新）
+
+> 合并用 `git merge up-vX.Y`（tag 已按 `refs/tags/*:refs/tags/up-*` 取到本地）。
+> 注意仓库初始是 **浅克隆**，必须先 `git fetch --unshallow origin` 才能算出 merge-base。
+
+| 批次 | 状态 | 合并到 | 冲突数 | 新增契约缺口 | 主面板产物 |
+|---|---|---|---|---|---|
+| B0 | ✅ 2026-09-13 | — | — | — | 2.17 MB |
+| B0d | ✅ 2026-09-13 | — | — | 门禁修正，暴露 46+1 既有欠账 | — |
+| B1 | ✅ 2026-09-13 | `up-v0.4.6-fix` | 6 | 0 | 2.25 MB |
+| B2 | ✅ 2026-09-13 | `up-v0.4.7` | 3 | 6（已清零） | 2.30 MB |
+
+**B0d（插入批次）：契约门禁此前在说谎。**
+校验脚本的正则要求事件名后紧跟闭合引号，看不见本仓库大量使用的冒号形式
+（`sendToJava('get_streaming_enabled:')`、`` sendToJava(`set_ui_font_config:${...}`) ``），
+所以长期报「缺口=0」，实际欠着 **46 个**；入站方向（宿主 `callJs` → 前端 `window.x =` 注册）
+则完全没查，查出 1 处真实空转（`taskHealthUpdate`）。已修正正则、补上入站校验，并引入
+`KNOWN_GAPS` / `KNOWN_INBOUND_GAPS` 欠账清单：清单内不阻断门禁，**清单外的新缺口一律失败**，
+清单内已实现的条目也失败（强制清单只减不增）。每条欠账都标了归属批次。
+**这意味着 3.2 节「验收」的第二条要改读法**：不再是「缺口为 0」，而是「**新增**缺口为 0，
+且欠账清单只减不增」。门禁自身也有了测试（`hbuilderx-plugin/scripts/check-message-contracts.test.js`）。
+
+**对 3.3 节 B2 行的勘误（有证据，见 B2 合并提交）：**
+- 「GPT-5.6 Sol/Terra/Luna（本仓库已自行实现，合并时**以上游实现为准**）」——**错**。上游 0.4.7
+  最高只到 `gpt-5.5`，这三个模型是本仓库 `eda243dc` 自己加的。按原文处理会静默删掉它们，
+  且契约校验与单测都发现不了。正确做法：`types.ts` / `ModelSelect.tsx` 的 **Claude 段取上游、
+  Codex 段取 ours**。0.4.7 实际改的是 Claude 模型表（删 `claude-opus-4-7`、加 `claude-sonnet-5`）。
+- 「消息尾部『详细输出』开关」**不在 0.4.7**，在 0.4.8 → 归 **B3**。
+
+**B1 的一处附带修正**：本仓库原先把 esbuild 选项写在 `build.esbuild` 下，Vite 不读该位置，
+等于 `drop: ['console']` 从未生效。合并时按上游改到顶层 `esbuild`，同时采纳上游的
+`keepNames: true`（ErrorBoundary 提取组件链所需，生产诊断用）。代价约 70 KB——
+2.17 → 2.25 MB 的增量里，功能内容本身只占约 10 KB。
+
+**B4 开工前必须先做的 spike（来自 B4 侦察，写在这里以免遗忘）：**
+1. `tokentracker-cli` 要求 **node ≥ 20**。HBuilderX 内置 Node 若低于 20，整条通路起不来——
+   不达标就在探测阶段直接返回明确原因，别让用户点了安装再失败。
+2. `usage.html` 是独立 webview、独立桥，`tt_*` 四个 case 的回包必须发回**发起请求的那条桥**，
+   需要给 `MessageRouter.dispatch` 加第三个 `bridge` 参数。写错的表现是仪表盘永远转圈且无报错。
+3. **KaTeX 绝不能直接内联**：`vite-plugin-singlefile` 会把 `assetsInlineLimit` 强制覆盖成
+   `() => true`，katex.css 的 60 个字体引用会全部 base64 化，主面板 +1.56 MB 直接翻倍。
+   必须走已有的「资源通道」按需下发。
+4. 契约脚本对 `sendToJava(type, ...)`（事件名是变量）和 `${prefix}` 拼接仍是盲区，
+   B4 的 `tokentrackerBridge.ts` 正好是变量形式——需要配一张手工声明表，否则门禁会放行真实缺口。
+
+---
 
 ### 3.4 B0 现存 26 个缺口（合并前必须先清）—— **已清零（2026-09-13）**
 
